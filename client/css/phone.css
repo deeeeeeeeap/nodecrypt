@@ -158,7 +158,59 @@
 	}
 	
 	.flip-card {
-		width: 95%;
+		width: min(94vw, 400px);
+		height: min(500px, calc(100dvh - 78px));
+		min-height: 460px;
+	}
+
+	.flip-card-front,
+	.flip-card-back {
+		padding: 32px 14px 18px 14px;
+		border-radius: 16px;
+	}
+
+	.flip-card-front::before {
+		background-size: auto 100%;
+		background-position: center bottom;
+		opacity: 0.5;
+	}
+
+	.flip-card-front::after {
+		background: linear-gradient(
+			180deg,
+			rgba(255, 255, 255, 0.42) 0%,
+			rgba(255, 255, 255, 0.32) 45%,
+			rgba(255, 255, 255, 0.6) 100%
+		);
+	}
+
+	.login-container h1 {
+		font-size: clamp(1.8rem, 8vw, 2.25rem);
+		margin: 34px 0 24px;
+	}
+
+	.login-container form {
+		gap: 16px;
+	}
+
+	.input-group {
+		margin-bottom: 8px;
+	}
+
+	.input-group input {
+		width: 100%;
+		box-sizing: border-box;
+		background: rgba(250, 251, 252, 0.84);
+		backdrop-filter: blur(2px);
+	}
+
+	.login-btn {
+		margin-top: 18px;
+	}
+
+	.powered-by {
+		margin-top: 12px;
+		font-size: 0.88rem;
 	}
 }
 
