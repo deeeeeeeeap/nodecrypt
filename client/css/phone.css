@@ -158,30 +158,19 @@
 	}
 	
 	.flip-card {
-		width: min(94vw, 400px);
+		width: 100%;
 		height: min(500px, calc(100dvh - 78px));
 		min-height: 460px;
+	}
+
+	.login-container {
+		width: min(88vw, 420px);
 	}
 
 	.flip-card-front,
 	.flip-card-back {
 		padding: 32px 14px 18px 14px;
 		border-radius: 16px;
-	}
-
-	.flip-card-front::before {
-		background-size: auto 100%;
-		background-position: center bottom;
-		opacity: 0.5;
-	}
-
-	.flip-card-front::after {
-		background: linear-gradient(
-			180deg,
-			rgba(255, 255, 255, 0.42) 0%,
-			rgba(255, 255, 255, 0.32) 45%,
-			rgba(255, 255, 255, 0.6) 100%
-		);
 	}
 
 	.login-container h1 {
