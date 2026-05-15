@@ -29,6 +29,7 @@ import {
 let mobileResizeHandler = null;
 let mobileDocumentClickHandler = null;
 let moreMenuDocumentClickHandler = null;
+const LOGIN_CONNECT_TIMEOUT_MS = 20000;
 
 // Utility functions for security and error handling
 // 安全和错误处理工具函数
@@ -428,13 +429,13 @@ export function loginFormHandler(modal) {
 		if (modal) {
 			userName = document.getElementById('userName-modal').value.trim();
 			roomName = document.getElementById('roomName-modal').value.trim();
-			password = document.getElementById('password-modal').value.trim();
+			password = document.getElementById('password-modal').value;
 			btn = modal.querySelector('.login-btn');
 			roomInput = document.getElementById('roomName-modal')
 		} else {
 			userName = document.getElementById('userName').value.trim();
 			roomName = document.getElementById('roomName').value.trim();
-			password = document.getElementById('password').value.trim();
+			password = document.getElementById('password').value;
 			btn = document.querySelector('#login-form .login-btn');
 			roomInput = document.getElementById('roomName')
 		}
@@ -446,6 +447,10 @@ export function loginFormHandler(modal) {
 				roomInput.parentNode.removeChild(roomInput._warnTip);
 				roomInput._warnTip = null
 			}
+		}
+		if (btn && btn._statusTip) {
+			btn._statusTip.remove();
+			btn._statusTip = null
 		}
 		if (exists) {
 			if (roomInput) {
@@ -468,10 +473,44 @@ export function loginFormHandler(modal) {
 			btn.disabled = true;
 			btn.innerText = t('ui.connecting', 'Connecting...')
 		}
-		window.joinRoom(userName, roomName, password, modal, function(success) {
-			if (!success && btn) {
+		let settled = false;
+		let attempt = null;
+		const resetButton = () => {
+			if (btn) {
 				btn.disabled = false;
-				btn.innerText = 'ENTER'
+				btn.innerText = t('ui.enter', 'ENTER')
+			}
+		};
+		const showConnectError = () => {
+			if (!btn) return;
+			if (btn._statusTip) btn._statusTip.remove();
+			const tip = document.createElement('div');
+			tip.className = 'login-status-error';
+			tip.textContent = t('ui.connect_timeout', '连接超时，请检查网络后重试');
+			btn.insertAdjacentElement('afterend', tip);
+			btn._statusTip = tip;
+		};
+		const timeout = setTimeout(() => {
+			if (settled) return;
+			settled = true;
+			if (attempt && typeof attempt.cancel === 'function') {
+				attempt.cancel()
+			} else {
+				exitRoom()
+			}
+			resetButton();
+			showConnectError();
+		}, LOGIN_CONNECT_TIMEOUT_MS);
+		attempt = window.joinRoom(userName, roomName, password, modal, function(success) {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timeout);
+			if (!success) {
+				if (attempt && typeof attempt.cancel === 'function') {
+					attempt.cancel()
+				}
+				resetButton();
+				showConnectError()
 			}
 		})
 	}

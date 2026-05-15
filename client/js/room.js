@@ -24,6 +24,28 @@ import { t } from './util.i18n.js';
 let roomsData = [];
 let activeRoomIndex = -1;
 
+function removePendingRoom(roomData) {
+	const index = roomsData.indexOf(roomData);
+	if (index === -1) return;
+	const chatInst = roomData.chat;
+	if (chatInst && typeof chatInst.destruct === 'function') {
+		chatInst.destruct()
+	} else if (chatInst && typeof chatInst.disconnect === 'function') {
+		chatInst.disconnect()
+	}
+	roomsData.splice(index, 1);
+	if (activeRoomIndex === index) {
+		if (roomsData.length > 0) {
+			switchRoom(Math.min(index, roomsData.length - 1))
+		} else {
+			activeRoomIndex = -1;
+			renderRooms(-1)
+		}
+	} else if (activeRoomIndex > index) {
+		activeRoomIndex -= 1
+	}
+}
+
 // Get a new room data object
 // 获取一个新的房间数据对象
 export function getNewRoomData() {
@@ -156,8 +178,15 @@ export function joinRoom(userName, roomName, password, modal = null, onResult) {
 	};
 	const chatInst = new window.NodeCrypt(window.config, callbacks);
 	chatInst.setCredentials(userName, roomName, password);
-	chatInst.connect();
-	roomsData[idx].chat = chatInst
+	const connected = chatInst.connect();
+	roomsData[idx].chat = chatInst;
+	if (!connected && onResult && !closed) {
+		closed = true;
+		onResult(false)
+	}
+	return {
+		cancel: () => removePendingRoom(newRd)
+	}
 }
 
 // Handle the client list update

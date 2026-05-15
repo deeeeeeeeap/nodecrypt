@@ -12,6 +12,7 @@ body.login-page {
 	justify-content: center;
 	flex-direction: column;
 	min-height: 100vh;
+	min-height: 100dvh;
 	background-color: #111;
 	background-image: url("https://image.757605.xyz/748d98964asd846adws.png");
 	background-position: center center;

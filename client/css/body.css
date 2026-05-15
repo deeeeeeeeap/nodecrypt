@@ -252,6 +252,14 @@ body {
 	transform: translateY(1px);
 }
 
+.login-status-error {
+	color: #e74c3c;
+	font-size: 0.92rem;
+	line-height: 1.4;
+	margin-top: 10px;
+	text-align: center;
+}
+
 .login-modal {
 	position: fixed;
 	z-index: 9999;
