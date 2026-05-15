@@ -5,6 +5,8 @@ import * as dicebearMicah from '@dicebear/micah';
 // Predefined background colors
 // 预设背景色数组
 const bgColors = ["f87171", "fb923c", "09acf4", "fb923c", "f472b6", "a78bfa", "34d399"];
+const avatarCache = new Map();
+const AVATAR_CACHE_LIMIT = 100;
 // Pick a color based on seed string
 // 根据种子字符串选择颜色
 function pickColor(seed) {
@@ -15,9 +17,18 @@ function pickColor(seed) {
 // Create SVG avatar for user name
 // 为用户名生成 SVG 头像
 export function createAvatarSVG(userName) {
-	return dicebearCore.createAvatar(dicebearMicah, {
-		seed: userName,
+	const cacheKey = String(userName || '');
+	if (avatarCache.has(cacheKey)) {
+		return avatarCache.get(cacheKey)
+	}
+	const svg = dicebearCore.createAvatar(dicebearMicah, {
+		seed: cacheKey,
 		baseColor: ["f7e1c3", "f9c9b6", "f2d6cb", "f8ce8e", "eac393"],
-		backgroundColor: [pickColor(userName)]
-	}).toString()
+		backgroundColor: [pickColor(cacheKey)]
+	}).toString();
+	avatarCache.set(cacheKey, svg);
+	if (avatarCache.size > AVATAR_CACHE_LIMIT) {
+		avatarCache.delete(avatarCache.keys().next().value)
+	}
+	return svg
 }

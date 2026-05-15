@@ -27,6 +27,15 @@ import {
 	t
 } from './util.i18n.js';
 
+let chatRenderFragment = null;
+
+function appendChatNode(chatArea, node) {
+	(chatRenderFragment || chatArea).appendChild(node);
+	if (!chatRenderFragment) {
+		chatArea.scrollTop = chatArea.scrollHeight
+	}
+}
+
 if (typeof document !== 'undefined') {
 	document.addEventListener('click', (event) => {
 		const target = event.target instanceof Element ?
@@ -52,11 +61,18 @@ export function renderChatArea() {
 		return
 	}
 	chatArea.innerHTML = '';
-	roomsData[activeRoomIndex].messages.forEach(m => {
-		if (m.type === 'me') addMsg(m.text, true, m.msgType || 'text', m.timestamp);
-		else if (m.type === 'system') addSystemMsg(m.text, true, m.timestamp);
-		else addOtherMsg(m.text, m.userName, m.avatar, true, m.msgType || 'text', m.timestamp)
-	})
+	chatRenderFragment = document.createDocumentFragment();
+	try {
+		roomsData[activeRoomIndex].messages.forEach(m => {
+			if (m.type === 'me') addMsg(m.text, true, m.msgType || 'text', m.timestamp);
+			else if (m.type === 'system') addSystemMsg(m.text, true, m.timestamp);
+			else addOtherMsg(m.text, m.userName, m.avatar, true, m.msgType || 'text', m.timestamp)
+		});
+		chatArea.appendChild(chatRenderFragment);
+		chatArea.scrollTop = chatArea.scrollHeight
+	} finally {
+		chatRenderFragment = null
+	}
 }
 
 // Add a message to the chat area
@@ -128,8 +144,7 @@ export function addMsg(text, isHistory = false, msgType = 'text', timestamp = nu
 	const div = createElement('div', {
 		class: className
 	}, `<span class="bubble-content">${contentHtml}</span><span class="bubble-meta">${time}</span>`);
-	chatArea.appendChild(div);
-	chatArea.scrollTop = chatArea.scrollHeight
+	appendChatNode(chatArea, div)
 }
 
 // Add a message from another user to the chat area
@@ -215,8 +230,7 @@ export function addOtherMsg(msg, userName = '', avatar = '', isHistory = false, 
 		const cleanSvg = svg.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
 		avatarEl.innerHTML = cleanSvg
 	}
-	chatArea.appendChild(bubbleWrap);
-	chatArea.scrollTop = chatArea.scrollHeight
+	appendChatNode(chatArea, bubbleWrap)
 }
 
 // Add a system message to the chat area
@@ -236,8 +250,7 @@ export function addSystemMsg(text, isHistory = false, timestamp = null) {
 	const div = createElement('div', {
 		class: 'bubble system'
 	}, `<span class="bubble-content">${safeText}</span>`);
-	chatArea.appendChild(div);
-	chatArea.scrollTop = chatArea.scrollHeight
+	appendChatNode(chatArea, div)
 }
 
 // Update the style of the chat input area

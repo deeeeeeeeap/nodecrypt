@@ -7,6 +7,54 @@ const HISTORY_MAX_MESSAGES = 100;
 const HISTORY_MAX_BYTES = 256 * 1024;
 const HISTORY_MAX_ENTRY_BYTES = 16 * 1024;
 
+function isLocalHostname(hostname) {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
+}
+
+function getRequestScheme(request, url) {
+  const forwardedProto = request.headers.get('x-forwarded-proto');
+  if (forwardedProto) {
+    return forwardedProto.split(',')[0].trim().toLowerCase();
+  }
+
+  const cfVisitor = request.headers.get('cf-visitor');
+  if (cfVisitor) {
+    try {
+      const parsed = JSON.parse(cfVisitor);
+      if (parsed && typeof parsed.scheme === 'string') {
+        return parsed.scheme.toLowerCase();
+      }
+    } catch {}
+  }
+
+  return url.protocol.replace(':', '').toLowerCase();
+}
+
+function shouldRedirectToHttps(request, url) {
+  return !isLocalHostname(url.hostname) && getRequestScheme(request, url) === 'http';
+}
+
+function withResponseHeaders(response, url) {
+  if (isLocalHostname(url.hostname)) {
+    return response;
+  }
+
+  const headers = new Headers(response.headers);
+  headers.set('Strict-Transport-Security', 'max-age=31536000');
+
+  if (url.pathname.startsWith('/assets/')) {
+    headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+  } else if (url.pathname === '/' || url.pathname.endsWith('.html')) {
+    headers.set('Cache-Control', 'no-cache');
+  }
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers
+  });
+}
+
 function getRoomObjectName(url) {
   const roomHash = url.searchParams.get('room');
 
@@ -21,6 +69,11 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
+    if (shouldRedirectToHttps(request, url)) {
+      url.protocol = 'https:';
+      return Response.redirect(url.toString(), 301);
+    }
+
     // 处理WebSocket请求
     const upgradeHeader = request.headers.get('Upgrade');
     if (upgradeHeader && upgradeHeader.toLowerCase() === 'websocket') {
@@ -32,11 +85,11 @@ export default {
     // 处理API请求
     if (url.pathname.startsWith('/api/')) {
       // ...API 逻辑...
-      return new Response(JSON.stringify({ ok: true }), { headers: { "Content-Type": "application/json" } });
+      return withResponseHeaders(new Response(JSON.stringify({ ok: true }), { headers: { "Content-Type": "application/json" } }), url);
     }
 
     // 其余全部交给 ASSETS 处理（自动支持 hash 文件名和 SPA fallback）
-    return env.ASSETS.fetch(request);
+    return withResponseHeaders(await env.ASSETS.fetch(request), url);
   }
 };
 

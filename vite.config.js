@@ -46,6 +46,9 @@ export default defineConfig({
 				// Manual chunks
 				// 手动分块
 				manualChunks: (id) => {
+					if (id.includes('emoji-picker-element')) {
+						return 'emoji-picker'
+					}
 					if (id.includes('node_modules')) {
 						return 'vendor'
 					}
