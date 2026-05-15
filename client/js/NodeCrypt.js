@@ -80,10 +80,13 @@ class NodeCrypt {
 	setCredentials(username, channel, password) {
 		this.logEvent('setCredentials');
 		try {
+			const roomHash = sha256(channel || '');
+			const passwordHash = sha256(password || '');
 			this.credentials = {
 				username: username,
-				channel: sha256(channel),
-				password: sha256(password)
+				roomHash: roomHash,
+				channel: sha256(`${roomHash}:${passwordHash}`),
+				password: passwordHash
 			};
 			this.historyKey = null
 		} catch (error) {

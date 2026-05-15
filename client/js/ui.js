@@ -26,6 +26,10 @@ import {
 	updateChatInputStyle
 } from './chat.js';
 
+let mobileResizeHandler = null;
+let mobileDocumentClickHandler = null;
+let moreMenuDocumentClickHandler = null;
+
 // Utility functions for security and error handling
 // 安全和错误处理工具函数
 
@@ -206,6 +210,10 @@ export function setupMobileUIHandlers() {
 		}
 	}
 	updateMobileBtnDisplay();
+	if (mobileResizeHandler) {
+		window.removeEventListener('resize', mobileResizeHandler)
+	}
+	mobileResizeHandler = updateMobileBtnDisplay;
 	window.addEventListener('resize', updateMobileBtnDisplay);
 	if (mobileMenuBtn && sidebar && sidebarMask) {
 		mobileMenuBtn.onclick = function(e) {
@@ -233,7 +241,10 @@ export function setupMobileUIHandlers() {
 			rightbarMask.classList.remove('active')
 		}
 	}	// Consolidated click event listener for closing sidebars
-	document.addEventListener('click', function(ev) {
+	if (mobileDocumentClickHandler) {
+		document.removeEventListener('click', mobileDocumentClickHandler)
+	}
+	mobileDocumentClickHandler = function(ev) {
 		const settingsBtn = $id('settings-btn');
 		const isSettingsButtonClick = settingsBtn && settingsBtn.contains(ev.target);
 		const isSettingsBackButtonClick = $id('settings-back-btn') && $id('settings-back-btn').contains(ev.target);
@@ -276,7 +287,8 @@ export function setupMobileUIHandlers() {
 				}
 			}
 		}
-	})
+	};
+	document.addEventListener('click', mobileDocumentClickHandler)
 }
 
 // Render the user/member list
@@ -372,19 +384,23 @@ export function setupMoreBtnMenu() {
 		}
 	};
 
-	document.addEventListener('click', function hideMenu(ev) {
+	if (moreMenuDocumentClickHandler) {
+		document.removeEventListener('click', moreMenuDocumentClickHandler)
+	}
+	moreMenuDocumentClickHandler = function hideMenu(ev) {
 		if (!menu.contains(ev.target) && ev.target !== btn) {
 			closeMenu();
 		}
-	});
+	};
+	document.addEventListener('click', moreMenuDocumentClickHandler);
 
-	menu.addEventListener('animationend', function(e) {
+	menu.onanimationend = function(e) {
 		animating = false;
-	});
+	};
 
-	menu.addEventListener('transitionend', function(e) {
+	menu.ontransitionend = function(e) {
 		animating = false;
-	});
+	};
 }
 
 // Prevent space and special character input
@@ -422,7 +438,7 @@ export function loginFormHandler(modal) {
 			btn = document.querySelector('#login-form .login-btn');
 			roomInput = document.getElementById('roomName')
 		}
-		const exists = roomsData.some(rd => rd.roomName && rd.roomName.toLowerCase() === roomName.toLowerCase());
+		const exists = roomsData.some(rd => rd.roomName && rd.roomName.toLowerCase() === roomName.toLowerCase() && (rd.password || '') === password);
 		if (roomInput) {
 			roomInput.style.border = '';
 			roomInput.style.background = '';
@@ -474,7 +490,7 @@ export function generateLoginForm(isModal = false) {
 			<label for="roomName${idPrefix}" class="floating-label">${t('ui.node_name', 'Node Name')}</label>
 		</div>
 		<div class="input-group">
-			<input id="password${idPrefix}" type="password" autocomplete="${isModal ? 'off' : 'current-password'}" minlength="1" maxlength="15" placeholder="">
+			<input id="password${idPrefix}" type="password" autocomplete="${isModal ? 'off' : 'current-password'}" minlength="1" maxlength="128" placeholder="">
 			<label for="password${idPrefix}" class="floating-label">${t('ui.node_password', 'Node Password')} <span class="optional">${t('ui.optional', '(optional)')}</span></label>
 		</div>
 		<button type="submit" class="login-btn">${t('ui.enter', 'ENTER')}</button>
@@ -488,7 +504,7 @@ export function openLoginModal() {
 	modal.querySelector('.login-modal-close').onclick = () => modal.remove();
 	preventSpaceInput(modal.querySelector('#userName-modal'));
 	preventSpaceInput(modal.querySelector('#roomName-modal'));
-	preventSpaceInput(modal.querySelector('#password-modal'));	const form = modal.querySelector('#login-form-modal');
+	const form = modal.querySelector('#login-form-modal');
 	form.addEventListener('submit', loginFormHandler(modal));
 	autofillRoomPwd('-modal')
 }

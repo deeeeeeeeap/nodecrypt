@@ -126,11 +126,10 @@ window.addEventListener('DOMContentLoaded', () => {
 	if (joinBtn) {
 		joinBtn.onclick = openLoginModal; // 点击打开登录窗口 / Click to open login modal
 	}
-	// 阻止用户输入用户名、房间名和密码时输入空格
-	// Prevent space input for username, room name, and password fields
+	// 阻止用户输入用户名、房间名时输入空格
+	// Prevent space input for username and room name fields.
 	preventSpaceInput($id('userName'));
 	preventSpaceInput($id('roomName'));
-	preventSpaceInput($id('password'));
 	
 	// 初始化翻转卡片功能 / Initialize flip card functionality
 	initFlipCard();

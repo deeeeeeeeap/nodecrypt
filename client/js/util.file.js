@@ -368,9 +368,9 @@ export function setupFileSend({
 				const userName = window.roomsData && window.activeRoomIndex >= 0
 					? (window.roomsData[window.activeRoomIndex]?.myUserName || '')
 					: '';
-				await handleFilesUpload(files, (msg) => {
+				await handleFilesUpload(files, async (msg) => {
 					// 合并 userName 字段
-					onSend({ ...msg, userName });
+					await onSend({ ...msg, userName });
 				});
 			});
 		});
@@ -494,10 +494,10 @@ async function sendVolumes(fileId, volumes, onSend, updateProgress, fileName) {
 	let currentVolume = 0;
 	const batchSize = 5; // 每批发送5个分卷
 	
-	function sendNextBatch() {
+	async function sendNextBatch() {
 		if (currentVolume >= volumes.length) {
 			// 发送完成消息
-			onSend({
+			await onSend({
 				type: 'file_complete',
 				fileId
 			});
@@ -523,7 +523,7 @@ async function sendVolumes(fileId, volumes, onSend, updateProgress, fileName) {
 		}
 		
 		// 发送批次中的所有分卷
-		batch.forEach(volumeMsg => onSend(volumeMsg));
+		await Promise.all(batch.map(volumeMsg => onSend(volumeMsg)));
 		
 		// 更新发送进度
 		fileTransfer.sentVolumes = batchEnd;
@@ -532,11 +532,12 @@ async function sendVolumes(fileId, volumes, onSend, updateProgress, fileName) {
 		currentVolume = batchEnd;
 		
 		// 继续发送下一批，使用较短的延迟
-		setTimeout(sendNextBatch, 100);
+		await new Promise(resolve => setTimeout(resolve, 100));
+		await sendNextBatch();
 	}
 	
 	// 开始发送
-	sendNextBatch();
+	await sendNextBatch();
 }
 
 // Update file progress in chat

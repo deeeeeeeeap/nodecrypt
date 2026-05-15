@@ -6,6 +6,7 @@ const baseUrl = process.env.SMOKE_BASE_URL || 'http://127.0.0.1:8787/';
 const shouldStartWrangler = !process.env.SMOKE_BASE_URL;
 const roomName = `smoke${Date.now().toString(36).slice(-8)}`;
 const password = 'pw123456';
+const wrongPassword = 'pw654321';
 const message = `history-smoke-${Date.now()}`;
 const liveMessage = `live-smoke-${Date.now()}`;
 
@@ -90,13 +91,13 @@ async function waitForChatText(page, expected, timeoutMs = 15000) {
 	return false;
 }
 
-async function joinRoom(page, userName) {
+async function joinRoom(page, userName, roomPassword = password) {
 	page.on('dialog', (dialog) => dialog.accept());
 	await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
 	await page.waitForSelector('#userName', { timeout: 15000 });
 	await page.fill('#userName', userName);
 	await page.fill('#roomName', roomName);
-	await page.fill('#password', password);
+	await page.fill('#password', roomPassword);
 	await page.$eval('#login-form', (form) => form.requestSubmit());
 
 	const secured = await waitForChatText(page, 'connection secured', 20000);
@@ -143,9 +144,18 @@ async function runSmoke() {
 		const bobText = await chatText(bob);
 		const bobHasHistory = bobText.includes(message) && bobText.includes('alice');
 		const bobHasLoadedNotice = bobText.includes('historical messages loaded');
+
+		const eveContext = await newEnglishContext(browser);
+		const eve = await eveContext.newPage();
+		await joinRoom(eve, 'eve', wrongPassword);
+
 		await sendText(alice, liveMessage);
 		const bobHasLiveMessage = await waitForChatText(bob, liveMessage, 15000);
+		await eve.waitForTimeout(1800);
+		const eveText = await chatText(eve);
+		const eveIsIsolated = !eveText.includes(message) && !eveText.includes(liveMessage) && !eveText.includes('alice') && !eveText.includes('bob');
 
+		await eveContext.close();
 		await bobContext.close();
 		await aliceContext.close();
 		await new Promise((resolve) => setTimeout(resolve, 2200));
@@ -159,13 +169,14 @@ async function runSmoke() {
 		await charlieContext.close();
 
 		const result = {
-			ok: bobHasHistory && bobHasLoadedNotice && bobHasLiveMessage && !charlieHasOldMessage,
+			ok: bobHasHistory && bobHasLoadedNotice && bobHasLiveMessage && eveIsIsolated && !charlieHasOldMessage,
 			roomName,
 			message,
 			liveMessage,
 			bobHasHistory,
 			bobHasLoadedNotice,
 			bobHasLiveMessage,
+			eveIsIsolated,
 			charlieHasOldMessage,
 		};
 		console.log(JSON.stringify(result, null, 2));

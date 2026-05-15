@@ -87,6 +87,6 @@ export default defineConfig({
 	optimizeDeps: {
 		// Include
 		// 包含
-		include: ['buffer', 'aes-js', 'elliptic', 'js-chacha20', 'js-sha256', '@dicebear/core', '@dicebear/micah'],
+		include: ['buffer', 'aes-js', 'js-sha256', '@dicebear/core', '@dicebear/micah'],
 	},
 });
