@@ -158,8 +158,14 @@
 	}
 	
 	.flip-card {
-	width: 95%;
-}
+		width: 95%;
+		height: 560px;
+	}
+
+	.login-desktop-image {
+		width: min(240px, 76%);
+		max-height: 112px;
+	}
 }
 
 .member.private-chat-active {

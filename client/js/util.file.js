@@ -41,7 +41,12 @@ function base64ToArrayBuffer(base64) {
 // Generate unique file ID
 // 生成唯一文件ID
 function generateFileId() {
-	return 'file_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+	if (crypto.randomUUID) {
+		return `file_${crypto.randomUUID()}`
+	}
+
+	const randomBytes = crypto.getRandomValues(new Uint8Array(16));
+	return 'file_' + Array.from(randomBytes, byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
 // Calculate SHA-256 hash for data integrity verification

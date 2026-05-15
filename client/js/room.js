@@ -37,6 +37,7 @@ export function getNewRoomData() {
 		messages: [],
 		prevUserList: [],
 		knownUserIds: new Set(),
+		historyIds: new Set(),
 		unreadCount: 0,
 		privateChatTargetId: null,
 		privateChatTargetName: null
@@ -108,12 +109,29 @@ export function joinRoom(userName, roomName, password, modal = null, onResult) {
 	let closed = false;
 	const callbacks = {
 		onServerClosed: () => {
-			setStatus('Node connection closed');
+			addSystemMsg(t('system.connection_closed', 'Node connection closed'));
 			if (onResult && !closed) {
 				closed = true;
 				onResult(false)
 			}
-		},		onServerSecured: () => {
+		},
+		onServerKeyChanged: () => {
+			const trusted = window.confirm(t(
+				'system.server_key_changed_confirm',
+				'The server identity key changed. This can happen after a server redeploy, but it can also indicate interception. Trust the new key?'
+			));
+
+			addSystemMsg(trusted ?
+				t('system.server_key_accepted', 'New server identity key trusted') :
+				t('system.server_key_rejected', 'Server identity key rejected')
+			);
+
+			return trusted
+		},
+		onServerTrustError: () => {
+			addSystemMsg(t('system.server_trust_error', 'Server identity verification failed'))
+		},
+		onServerSecured: () => {
 			if (modal) modal.remove();
 			else {
 				const loginContainer = $id('login-container');
@@ -132,7 +150,8 @@ export function joinRoom(userName, roomName, password, modal = null, onResult) {
 		onClientSecured: (user) => handleClientSecured(idx, user),
 		onClientList: (list, selfId) => handleClientList(idx, list, selfId),
 		onClientLeft: (clientId) => handleClientLeft(idx, clientId),
-		onClientMessage: (msg) => handleClientMessage(idx, msg)
+		onClientMessage: (msg) => handleClientMessage(idx, msg),
+		onHistoryMessages: (messages) => handleHistoryMessages(idx, messages)
 	};
 	const chatInst = new window.NodeCrypt(window.config, callbacks);
 	chatInst.setCredentials(userName, roomName, password);
@@ -166,6 +185,44 @@ export function handleClientList(idx, list, selfId) {
 	if (rd.initCount === 2) {
 		rd.isInitialized = true;
 		rd.knownUserIds = new Set(list.map(u => u.clientId))
+	}
+}
+
+function formatHistoryLoadedMessage(count) {
+	return t('system.history_loaded_count', '{count} historical messages loaded').replace('{count}', count)
+}
+
+// Handle temporary encrypted room history from the relay.
+// 处理由中继端缓存的临时加密房间历史。
+export function handleHistoryMessages(idx, messages) {
+	const rd = roomsData[idx];
+	if (!rd || !Array.isArray(messages)) return;
+	if (!rd.historyIds) {
+		rd.historyIds = new Set()
+	}
+
+	const sortedMessages = messages.slice().sort((a, b) => a.ts - b.ts);
+	let added = 0;
+
+	for (const msg of sortedMessages) {
+		if (!msg || rd.historyIds.has(msg.id)) continue;
+
+		rd.historyIds.add(msg.id);
+		rd.messages.push({
+			type: msg.u === rd.myUserName ? 'me' : 'other',
+			text: msg.d,
+			userName: msg.u,
+			avatar: msg.u,
+			msgType: 'text',
+			timestamp: msg.ts,
+			historyId: msg.id
+		});
+		added += 1
+	}
+
+	if (added > 0 && activeRoomIndex === idx) {
+		renderChatArea();
+		addSystemMsg(formatHistoryLoadedMessage(added))
 	}
 }
 

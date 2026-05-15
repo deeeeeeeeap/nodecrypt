@@ -103,8 +103,7 @@ export const decryptMessage = (message, key) => {
 
 export const logEvent = (source, message, level) => {
   if (
-    level !== 'debug' ||
-    true // config.debug would go here
+    level !== 'debug'
   ) {
 
     const date = new Date(),

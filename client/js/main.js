@@ -85,7 +85,7 @@ import {	renderUserList,       // 渲染用户列表 / Render user list
 window.config = {
 	wsAddress: `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`, // WebSocket 服务器地址 / WebSocket server address
 	//wsAddress: `wss://crypt.works`,
-	debug: true                       // 是否开启调试模式 / Enable debug mode
+	debug: false                      // 是否开启调试模式 / Enable debug mode
 };
 
 // 在文档开始加载前就初始化语言设置，防止闪烁
@@ -183,7 +183,7 @@ window.addEventListener('DOMContentLoaded', () => {
 	
 	// 发送消息的统一函数
 	// Unified function to send messages
-	function sendMessage() {
+	async function sendMessage() {
 		const text = input.innerText.trim(); // 获取输入的文本 / Get input text
 		const images = imagePasteHandler ? imagePasteHandler.getCurrentImages() : []; // 获取所有图片
 
@@ -209,7 +209,7 @@ window.addEventListener('DOMContentLoaded', () => {
 							t: 'image_private',
 							d: messageContent
 						};
-						const encryptedClientMessage = rd.chat.encryptClientMessage(clientMessagePayload, targetClient.shared);
+						const encryptedClientMessage = await rd.chat.encryptClientMessage(clientMessagePayload, targetClient.shared);
 						const serverRelayPayload = {
 							a: 'c',
 							p: encryptedClientMessage,
@@ -241,7 +241,7 @@ window.addEventListener('DOMContentLoaded', () => {
 							t: 'text_private',
 							d: text
 						};
-						const encryptedClientMessage = rd.chat.encryptClientMessage(clientMessagePayload, targetClient.shared);
+						const encryptedClientMessage = await rd.chat.encryptClientMessage(clientMessagePayload, targetClient.shared);
 						const serverRelayPayload = {
 							a: 'c',
 							p: encryptedClientMessage,
@@ -282,7 +282,7 @@ window.addEventListener('DOMContentLoaded', () => {
 		inputSelector: '.input-message-input', // 消息输入框选择器 / Message input selector
 		attachBtnSelector: '.chat-attach-btn', // 附件按钮选择器 / Attach button selector
 		fileInputSelector: '.new-message-wrapper input[type="file"]', // 文件输入框选择器 / File input selector
-		onSend: (message) => {
+		onSend: async (message) => {
 			const rd = roomsData[activeRoomIndex];
 			if (rd && rd.chat) {
 				const userName = rd.myUserName || '';
@@ -297,7 +297,7 @@ window.addEventListener('DOMContentLoaded', () => {
 							t: msgWithUser.type + '_private',
 							d: msgWithUser
 						};
-						const encryptedClientMessage = rd.chat.encryptClientMessage(clientMessagePayload, targetClient.shared);
+						const encryptedClientMessage = await rd.chat.encryptClientMessage(clientMessagePayload, targetClient.shared);
 						const serverRelayPayload = {
 							a: 'c',
 							p: encryptedClientMessage,

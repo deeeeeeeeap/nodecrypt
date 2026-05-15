@@ -5,6 +5,11 @@
 const crypto = require('crypto');
 const ws = require('ws');
 
+const SEEN_TIMEOUT_MS = 60000;
+const HISTORY_MAX_MESSAGES = 100;
+const HISTORY_MAX_BYTES = 256 * 1024;
+const HISTORY_MAX_ENTRY_BYTES = 16 * 1024;
+
 // Generate a new RSA key pair
 // 生成一个新的 RSA 密钥对
 const generateRSAKeyPair = () => {
@@ -47,7 +52,9 @@ const config = {
 	rsaPublic: keyPair.rsaPublic,
 	wsHost: '127.0.0.1',
 	wsPort: 8088,
-	seenTimeout: 60000,
+	seenTimeout: SEEN_TIMEOUT_MS,
+	historyMaxMessages: HISTORY_MAX_MESSAGES,
+	historyMaxBytes: HISTORY_MAX_BYTES,
 	debug: false
 };
 
@@ -63,6 +70,7 @@ console.log('server started', config.wsHost, config.wsPort);
 
 var clients = {};
 var channels = {};
+var historyBacklogs = {};
 
 // WebSocket server connection event handler
 // WebSocket 服务器连接事件处理程序
@@ -194,61 +202,13 @@ wss.on('connection', (connection) => {
 
 		logEvent('close', [clientId, event], 'debug');
 
+		const client = clients[clientId];
 
-		const channel = clients[clientId].channel;
-
-		if (
-			channel &&
-			channels[channel]
-		) {
-
-			channels[channel].splice(channels[channel].indexOf(clientId), 1);
-
-			if (
-				channels[channel].length === 0
-			) {
-
-
-				delete(channels[channel]);
-
-			} else {
-
-
-				try {
-
-					const members = channels[channel];
-
-					for (
-						const member of members
-					) {
-
-						const client = clients[member];
-
-						if (
-							isClientInChannel(client, channel)
-						) {
-							sendMessage(client.connection, encryptMessage({
-								a: 'l',
-								p: members.filter((value) => {
-									return (
-										value !== member ?
-										true :
-										false
-									);
-								})
-							}, client.shared));
-						}
-
-					}
-
-				} catch (error) {
-					logEvent('close-list', [clientId, error], 'error');
-				}
-
-			}
-
+		if (!client) {
+			return;
 		}
 
+		removeClientFromChannel(clientId, client.channel);
 
 		if (
 			clients[clientId]
@@ -285,6 +245,8 @@ const processEncryptedMessage = (clientId, message) => {
 			handleClientMessage(clientId, decrypted);
 		} else if (action === 'w') {
 			handleChannelMessage(clientId, decrypted);
+		} else if (action === 'h') {
+			handleHistoryMessage(clientId, decrypted);
 		}
 
 	} catch (error) {
@@ -315,10 +277,29 @@ const handleJoinChannel = (clientId, decrypted) => {
 			channels[channel].push(clientId);
 		}
 
+		sendHistoryBacklog(clientId, channel);
 		broadcastMemberList(channel);
 
 	} catch (error) {
 		logEvent('message-join', [clientId, error], 'error');
+	}
+};
+
+// Handle encrypted temporary room history.
+// 处理临时房间历史密文。
+const handleHistoryMessage = (clientId, decrypted) => {
+	if (
+		!isString(decrypted.p) ||
+		!clients[clientId].channel
+	) {
+		return;
+	}
+
+	try {
+		const channel = clients[clientId].channel;
+		appendHistoryEntry(channel, decrypted.p);
+	} catch (error) {
+		logEvent('message-history', [clientId, error], 'error');
 	}
 };
 
@@ -418,6 +399,69 @@ const broadcastMemberList = (channel) => {
 		}
 	} catch (error) {
 		logEvent('broadcast-member-list', error, 'error');
+	}
+};
+
+const appendHistoryEntry = (channel, encryptedHistory) => {
+	if (!channel || !isString(encryptedHistory) || encryptedHistory.length > HISTORY_MAX_ENTRY_BYTES) {
+		return;
+	}
+
+	if (!historyBacklogs[channel]) {
+		historyBacklogs[channel] = [];
+	}
+
+	const backlog = historyBacklogs[channel];
+	backlog.push(encryptedHistory);
+
+	while (backlog.length > config.historyMaxMessages) {
+		backlog.shift();
+	}
+
+	let totalBytes = backlog.reduce((sum, item) => sum + item.length, 0);
+	while (totalBytes > config.historyMaxBytes && backlog.length > 0) {
+		const removed = backlog.shift();
+		totalBytes -= removed ? removed.length : 0;
+	}
+};
+
+const sendHistoryBacklog = (clientId, channel) => {
+	try {
+		const client = clients[clientId];
+		const backlog = historyBacklogs[channel];
+
+		if (!isClientInChannel(client, channel) || !backlog || backlog.length === 0) {
+			return;
+		}
+
+		const encrypted = encryptMessage({
+			a: 'h',
+			p: backlog
+		}, client.shared);
+		sendMessage(client.connection, encrypted);
+	} catch (error) {
+		logEvent('history-backlog', [clientId, error], 'error');
+	}
+};
+
+const removeClientFromChannel = (clientId, channel, notifyMembers = true) => {
+	if (!channel || !channels[channel]) {
+		return;
+	}
+
+	const index = channels[channel].indexOf(clientId);
+	if (index >= 0) {
+		channels[channel].splice(index, 1);
+	}
+
+	if (channels[channel].length === 0) {
+		delete(channels[channel]);
+		delete(historyBacklogs[channel]);
+		return;
+	}
+
+	if (notifyMembers) {
+		broadcastMemberList(channel);
 	}
 };
 

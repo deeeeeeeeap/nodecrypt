@@ -8,7 +8,8 @@
     "dev": " wrangler dev",
     "deploy": " wrangler deploy",
     "publish": " wrangler publish",
-    "build:docker": "vite build"
+    "build:docker": "vite build",
+    "smoke:cloudflare": "node scripts/cloudflare-smoke.mjs"
   },
   "repository": {
     "type": "git",
@@ -24,6 +25,7 @@
   "devDependencies": {
     "autoprefixer": "^10.4.21",
     "cssnano": "^7.0.7",
+    "playwright": "^1.60.0",
     "terser": "^5.39.2",
     "vite": "^6.3.5",
     "wrangler": "^4.16.1"
@@ -34,10 +36,8 @@
     "aes-js": "^3.1.2",
     "buffer": "^6.0.3",
     "dompurify": "^3.2.6",
-    "elliptic": "^6.6.1",
     "emoji-picker-element": "^1.26.3",
     "fflate": "^0.8.2",
-    "js-chacha20": "^1.1.0",
     "js-sha256": "^0.11.0"
   }
 }

@@ -86,7 +86,12 @@ function updateModalTexts() {
 // Generate unique file ID
 // 生成唯一文件ID
 function generateFileId() {
-	return 'upload_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+	if (crypto.randomUUID) {
+		return `upload_${crypto.randomUUID()}`
+	}
+
+	const randomBytes = crypto.getRandomValues(new Uint8Array(16));
+	return 'upload_' + Array.from(randomBytes, byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
 // Create file upload modal

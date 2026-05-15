@@ -5,12 +5,8 @@ import {
 	sha256
 } from 'js-sha256';
 import {
-	ec as elliptic
-} from 'elliptic';
-import {
 	ModeOfOperation
 } from 'aes-js';
-import chacha from 'js-chacha20';
 import {
 	Buffer
 } from 'buffer';
@@ -32,18 +28,17 @@ class NodeCrypt {
 		this.callbacks = {
 			onServerClosed: callbacks.onServerClosed || null,
 			onServerSecured: callbacks.onServerSecured || null,
+			onServerKeyChanged: callbacks.onServerKeyChanged || null,
+			onServerTrustError: callbacks.onServerTrustError || null,
 			onClientSecured: callbacks.onClientSecured || null,
 			onClientList: callbacks.onClientList || null,
 			onClientMessage: callbacks.onClientMessage || null,
+			onHistoryMessages: callbacks.onHistoryMessages || null,
 		};
 		this.SERVER_KEY_STORAGE = 'nodecrypt_server_key';
-		try {
-			this.clientEc = new elliptic('curve25519')
-		} catch (error) {
-			this.logEvent('constructor', error, 'error')
-		}
 		this.serverKeys = null;
 		this.serverShared = null;
+		this.historyKey = null;
 		this.credentials = null;
 		this.connection = null;
 		this.reconnect = null;
@@ -52,6 +47,8 @@ class NodeCrypt {
 		this.setCredentials = this.setCredentials.bind(this);
 		this.connect = this.connect.bind(this);
 		this.destruct = this.destruct.bind(this);
+		this.getWebSocketAddress = this.getWebSocketAddress.bind(this);
+		this.getServerKeyStorageKey = this.getServerKeyStorageKey.bind(this);
 		this.onOpen = this.onOpen.bind(this);
 		this.onMessage = this.onMessage.bind(this);
 		this.onError = this.onError.bind(this);
@@ -66,6 +63,12 @@ class NodeCrypt {
 		this.disconnect = this.disconnect.bind(this);
 		this.sendMessage = this.sendMessage.bind(this);
 		this.sendChannelMessage = this.sendChannelMessage.bind(this);
+		this.storeHistoryMessage = this.storeHistoryMessage.bind(this);
+		this.encryptHistoryMessage = this.encryptHistoryMessage.bind(this);
+		this.decryptHistoryMessage = this.decryptHistoryMessage.bind(this);
+		this.getHistoryKey = this.getHistoryKey.bind(this);
+		this.createClientChannel = this.createClientChannel.bind(this);
+		this.deriveClientSharedKey = this.deriveClientSharedKey.bind(this);
 		this.encryptServerMessage = this.encryptServerMessage.bind(this);
 		this.decryptServerMessage = this.decryptServerMessage.bind(this);
 		this.encryptClientMessage = this.encryptClientMessage.bind(this);
@@ -81,7 +84,8 @@ class NodeCrypt {
 				username: username,
 				channel: sha256(channel),
 				password: sha256(password)
-			}
+			};
+			this.historyKey = null
 		} catch (error) {
 			this.logEvent('setCredentials', error, 'error');
 			return (false)
@@ -95,14 +99,16 @@ class NodeCrypt {
 		if (!this.credentials) {
 			return (false)
 		}
-		this.logEvent('connect', this.config.wsAddress);
+		const wsAddress = this.getWebSocketAddress();
+		this.logEvent('connect', wsAddress);
 		this.stopReconnect();
 		this.stopPing();
 		this.serverKeys = null;
 		this.serverShared = null;
+		this.historyKey = null;
 		this.channel = {};
 		try {
-			this.connection = new WebSocket(this.config.wsAddress);
+			this.connection = new WebSocket(wsAddress);
 			this.connection.onopen = this.onOpen;
 			this.connection.onmessage = this.onMessage;
 			this.connection.onerror = this.onError;
@@ -112,6 +118,36 @@ class NodeCrypt {
 			return (false)
 		}
 		return (true)
+	}
+
+	// Include the room hash in the WebSocket URL so Workers can shard by room.
+	// 在 WebSocket URL 中附加房间哈希，便于 Workers 按房间分片。
+	getWebSocketAddress() {
+		try {
+			const url = new URL(this.config.wsAddress, window.location.href);
+			if (this.credentials && this.credentials.channel) {
+				url.searchParams.set('room', this.credentials.channel)
+			}
+			return url.toString()
+		} catch (error) {
+			this.logEvent('getWebSocketAddress', error, 'error');
+			return this.config.wsAddress
+		}
+	}
+
+	// Scope pinned server keys by endpoint and room hash; Workers shard rooms into distinct Durable Objects.
+	// 按端点和房间哈希隔离服务端公钥指纹；Workers 会将房间分片到不同 Durable Object。
+	getServerKeyStorageKey() {
+		try {
+			const url = new URL(this.config.wsAddress, window.location.href);
+			const roomScope = this.credentials && this.credentials.channel ?
+				`:${this.credentials.channel}` :
+				'';
+			return `${this.SERVER_KEY_STORAGE}:${url.protocol}//${url.host}${roomScope}`
+		} catch (error) {
+			this.logEvent('getServerKeyStorageKey', error, 'error');
+			return this.SERVER_KEY_STORAGE
+		}
 	}
 
 	// Clean up and disconnect
@@ -131,26 +167,26 @@ class NodeCrypt {
 		};
 		this.callbacks.onServerClosed = null;
 		this.callbacks.onServerSecured = null;
+		this.callbacks.onServerKeyChanged = null;
+		this.callbacks.onServerTrustError = null;
 		this.callbacks.onClientSecured = null;
 		this.callbacks.onClientList = null;
 		this.callbacks.onClientMessage = null;
-		this.clientEc = null;
+		this.callbacks.onHistoryMessages = null;
 		this.serverKeys = null;
 		this.serverShared = null;
+		this.historyKey = null;
 		this.credentials = null;
-		this.connection.onopen = null;
-		this.connection.onmessage = null;
-		this.connection.onerror = null;
-		this.connection.onclose = null;
-		try {
-			this.connection.removeAllListeners()
-		} catch (error) {
-			this.logEvent('destruct', error, 'error')
-		}
-		try {
-			this.connection.close()
-		} catch (error) {
-			this.logEvent('destruct', error, 'error')
+		if (this.connection) {
+			this.connection.onopen = null;
+			this.connection.onmessage = null;
+			this.connection.onerror = null;
+			this.connection.onclose = null;
+			try {
+				this.connection.close()
+			} catch (error) {
+				this.logEvent('destruct', error, 'error')
+			}
 		}
 		this.connection = null;
 		this.channel = {};
@@ -247,12 +283,8 @@ class NodeCrypt {
 				let payloads = {};
 				for (const clientId of serverDecrypted.p) {
 					if (!this.channel[clientId]) {
-						this.channel[clientId] = {
-							username: null,
-							keys: this.clientEc.genKeyPair(),
-							shared: null,
-						};
-						payloads[clientId] = this.channel[clientId].keys.getPublic('hex')
+						this.channel[clientId] = await this.createClientChannel();
+						payloads[clientId] = this.channel[clientId].publicKey
 					}
 				}
 				if (Object.keys(payloads).length > 0) {
@@ -282,27 +314,40 @@ class NodeCrypt {
 			}
 			return
 		}
+		if (serverDecrypted.a === 'h' && this.isArray(serverDecrypted.p)) {
+			try {
+				const historyMessages = [];
+				for (const encryptedHistory of serverDecrypted.p) {
+					const historyMessage = await this.decryptHistoryMessage(encryptedHistory);
+					if (historyMessage) {
+						historyMessages.push(historyMessage)
+					}
+				}
+				if (historyMessages.length > 0 && this.callbacks.onHistoryMessages) {
+					this.callbacks.onHistoryMessages(historyMessages)
+				}
+			} catch (error) {
+				this.logEvent('onMessage-history', error, 'error')
+			}
+			return
+		}
 		if (!this.isString(serverDecrypted.p) || !this.isString(serverDecrypted.c)) {
 			return
 		}
 		if (serverDecrypted.a === 'c' && (!this.channel[serverDecrypted.c] || !this.channel[serverDecrypted.c].shared)) {
 			try {
 				if (!this.channel[serverDecrypted.c]) {
-					this.channel[serverDecrypted.c] = {
-						username: null,
-						keys: this.clientEc.genKeyPair(),
-						shared: null,
-					};
+					this.channel[serverDecrypted.c] = await this.createClientChannel();
 					this.sendMessage(this.encryptServerMessage({
 						a: 'c',
-						p: this.channel[serverDecrypted.c].keys.getPublic('hex'),
+						p: this.channel[serverDecrypted.c].publicKey,
 						c: serverDecrypted.c
 					}, this.serverShared))
 				}
-				this.channel[serverDecrypted.c].shared = Buffer.from(this.xorHex(this.channel[serverDecrypted.c].keys.derive(this.clientEc.keyFromPublic(serverDecrypted.p, 'hex').getPublic()).toString('hex').padEnd(64, '8').substr(0, 64), this.credentials.password), 'hex');
+				this.channel[serverDecrypted.c].shared = await this.deriveClientSharedKey(this.channel[serverDecrypted.c], serverDecrypted.p);
 				this.sendMessage(this.encryptServerMessage({
 					a: 'c',
-					p: this.encryptClientMessage({
+					p: await this.encryptClientMessage({
 						a: 'u',
 						p: this.credentials.username
 					}, this.channel[serverDecrypted.c].shared),
@@ -314,7 +359,7 @@ class NodeCrypt {
 			return
 		}
 		if (serverDecrypted.a === 'c' && this.channel[serverDecrypted.c] && this.channel[serverDecrypted.c].shared) {
-			const clientDecrypted = this.decryptClientMessage(serverDecrypted.p, this.channel[serverDecrypted.c].shared);
+			const clientDecrypted = await this.decryptClientMessage(serverDecrypted.p, this.channel[serverDecrypted.c].shared);
 			this.logEvent('onMessage-client-decrypted', clientDecrypted);
 			if (!this.isObject(clientDecrypted) || !this.isString(clientDecrypted.a)) {
 				return
@@ -481,13 +526,13 @@ class NodeCrypt {
 
 	// Send a message to all channels
 	// 向所有频道发送消息
-	sendChannelMessage(type, data) {
+	async sendChannelMessage(type, data) {
 		if (this.serverShared) {
 			try {
 				let payloads = {};
 				for (const clientId in this.channel) {
 					if (this.channel[clientId].shared && this.channel[clientId].username) {
-						payloads[clientId] = this.encryptClientMessage({
+						payloads[clientId] = await this.encryptClientMessage({
 							a: 'm',
 							t: type,
 							d: data
@@ -507,12 +552,193 @@ class NodeCrypt {
 					}
 					this.connection.send(payload)
 				}
+				if (type === 'text' && this.isString(data)) {
+					this.storeHistoryMessage(type, data)
+				}
 				return (true)
 			} catch (error) {
 				this.logEvent('sendChannelMessage', error, 'error')
 			}
 		}
 		return (false)
+	}
+
+	// Store text-only public history as room-password encrypted ciphertext on the relay.
+	// 仅将公共文本历史以房间密码派生密钥加密后缓存到中继端。
+	async storeHistoryMessage(type, data) {
+		try {
+			if (!this.serverShared || type !== 'text' || !this.isString(data)) {
+				return (false)
+			}
+
+			const encryptedHistory = await this.encryptHistoryMessage(type, data);
+			if (!encryptedHistory) {
+				return (false)
+			}
+
+			const payload = this.encryptServerMessage({
+				a: 'h',
+				p: encryptedHistory
+			}, this.serverShared);
+
+			if (!this.isOpen() || payload.length === 0 || payload.length > (8 * 1024 * 1024)) {
+				return (false)
+			}
+
+			this.connection.send(payload);
+			return (true)
+		} catch (error) {
+			this.logEvent('storeHistoryMessage', error, 'error')
+		}
+		return (false)
+	}
+
+	async getHistoryKey() {
+		if (this.historyKey) {
+			return this.historyKey
+		}
+		if (!this.credentials) {
+			return null
+		}
+
+		const keyHex = sha256(`nodecrypt-history-v1|${this.credentials.channel}|${this.credentials.password}`);
+		this.historyKey = await crypto.subtle.importKey(
+			'raw',
+			Buffer.from(keyHex, 'hex'),
+			{
+				name: 'AES-GCM'
+			},
+			false,
+			['encrypt', 'decrypt']
+		);
+		return this.historyKey
+	}
+
+	async encryptHistoryMessage(type, data) {
+		try {
+			const historyKey = await this.getHistoryKey();
+			if (!historyKey) {
+				return ''
+			}
+
+			const nonce = Buffer.from(crypto.getRandomValues(new Uint8Array(12)));
+			const entry = {
+				v: 1,
+				id: crypto.randomUUID ? crypto.randomUUID() : Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString('hex'),
+				u: this.credentials.username,
+				t: type,
+				d: data,
+				ts: Date.now()
+			};
+			const encrypted = await crypto.subtle.encrypt(
+				{
+					name: 'AES-GCM',
+					iv: nonce
+				},
+				historyKey,
+				Buffer.from(JSON.stringify(entry), 'utf8')
+			);
+
+			return `h1|${nonce.toString('base64')}|${Buffer.from(encrypted).toString('base64')}`
+		} catch (error) {
+			this.logEvent('encryptHistoryMessage', error, 'error')
+		}
+		return ''
+	}
+
+	async decryptHistoryMessage(message) {
+		try {
+			if (!this.isString(message)) {
+				return null
+			}
+
+			const parts = message.split('|');
+			if (parts.length !== 3 || parts[0] !== 'h1') {
+				return null
+			}
+
+			const historyKey = await this.getHistoryKey();
+			if (!historyKey) {
+				return null
+			}
+
+			const decrypted = await crypto.subtle.decrypt(
+				{
+					name: 'AES-GCM',
+					iv: Buffer.from(parts[1], 'base64')
+				},
+				historyKey,
+				Buffer.from(parts[2], 'base64')
+			);
+			const entry = JSON.parse(Buffer.from(decrypted).toString('utf8'));
+			if (
+				!entry ||
+				entry.v !== 1 ||
+				!this.isString(entry.id) ||
+				!this.isString(entry.u) ||
+				entry.t !== 'text' ||
+				!this.isString(entry.d) ||
+				typeof entry.ts !== 'number'
+			) {
+				return null
+			}
+			return entry
+		} catch (error) {
+			this.logEvent('decryptHistoryMessage', error, 'error')
+		}
+		return null
+	}
+
+	async createClientChannel() {
+		const keys = await crypto.subtle.generateKey(
+			{
+				name: 'ECDH',
+				namedCurve: 'P-384'
+			},
+			true,
+			['deriveBits']
+		);
+		return {
+			username: null,
+			keys,
+			publicKey: Buffer.from(await crypto.subtle.exportKey('raw', keys.publicKey)).toString('hex'),
+			shared: null,
+		}
+	}
+
+	async deriveClientSharedKey(channelState, peerPublicKeyHex) {
+		if (!channelState || !channelState.keys || !this.credentials || !this.isString(peerPublicKeyHex)) {
+			return null
+		}
+
+		const peerPublicKey = await crypto.subtle.importKey(
+			'raw',
+			Buffer.from(peerPublicKeyHex, 'hex'),
+			{
+				name: 'ECDH',
+				namedCurve: 'P-384'
+			},
+			false,
+			[]
+		);
+		const sharedBits = await crypto.subtle.deriveBits(
+			{
+				name: 'ECDH',
+				public: peerPublicKey
+			},
+			channelState.keys.privateKey,
+			384
+		);
+		const keyHex = sha256(`nodecrypt-client-v2|${Buffer.from(sharedBits).toString('hex')}|${this.credentials.password}`);
+		return crypto.subtle.importKey(
+			'raw',
+			Buffer.from(keyHex, 'hex'),
+			{
+				name: 'AES-GCM'
+			},
+			false,
+			['encrypt', 'decrypt']
+		)
 	}
 
 	// Encrypt a message for the server
@@ -549,17 +775,19 @@ class NodeCrypt {
 
 	// Encrypt a message for a client
 	// 加密发送给客户端的消息
-	encryptClientMessage(message, key) {
+	async encryptClientMessage(message, key) {
 		let encrypted = '';
 		try {
-			message = Buffer.from(JSON.stringify(message), 'utf8');
-			if ((message.length % 16) !== 0) {
-				message = Buffer.from([...message, ...Buffer.alloc(16 - (message.length % 16))])
-			}
-			const iv = Buffer.from(crypto.getRandomValues(new Uint8Array(12)));
-			const counter = Buffer.from(crypto.getRandomValues(new Uint8Array(4)));
-			const cipher = new chacha(key, iv, counter.reduce((a, b) => a * b));
-			encrypted = iv.toString('base64') + '|' + counter.toString('base64') + '|' + Buffer.from(cipher.encrypt(message)).toString('base64')
+			const nonce = Buffer.from(crypto.getRandomValues(new Uint8Array(12)));
+			const ciphertext = await crypto.subtle.encrypt(
+				{
+					name: 'AES-GCM',
+					iv: nonce
+				},
+				key,
+				Buffer.from(JSON.stringify(message), 'utf8')
+			);
+			encrypted = `g1|${nonce.toString('base64')}|${Buffer.from(ciphertext).toString('base64')}`
 		} catch (error) {
 			this.logEvent('encryptClientMessage', error, 'error')
 		}
@@ -568,27 +796,26 @@ class NodeCrypt {
 
 	// Decrypt a message from a client
 	// 解密来自客户端的消息
-	decryptClientMessage(message, key) {
+	async decryptClientMessage(message, key) {
 		let decrypted = {};
 		try {
 			const parts = message.split('|');
-			const decipher = new chacha(key, Buffer.from(parts[0], 'base64'), Buffer.from(parts[1], 'base64').reduce((a, b) => a * b));
-			decrypted = JSON.parse(Buffer.from(decipher.decrypt(Buffer.from(parts[2], 'base64'))).toString('utf8').replace(/\0+$/, ''))
+			if (parts.length !== 3 || parts[0] !== 'g1') {
+				return decrypted
+			}
+			const plaintext = await crypto.subtle.decrypt(
+				{
+					name: 'AES-GCM',
+					iv: Buffer.from(parts[1], 'base64')
+				},
+				key,
+				Buffer.from(parts[2], 'base64')
+			);
+			decrypted = JSON.parse(Buffer.from(plaintext).toString('utf8'))
 		} catch (error) {
 			this.logEvent('decryptClientMessage', error, 'error')
 		}
 		return (decrypted)
-	}
-
-	// XOR two hex strings
-	// 对两个十六进制字符串进行异或
-	xorHex(a, b) {
-		let result = '',
-			hexLength = Math.min(a.length, b.length);
-		for (let i = 0; i < hexLength; ++i) {
-			result += (parseInt(a.charAt(i), 16) ^ parseInt(b.charAt(i), 16)).toString(16)
-		}
-		return (result)
 	}
 
 	// Check if value is a string
@@ -613,8 +840,48 @@ class NodeCrypt {
 	// 处理服务器公钥
 	async handleServerKey(serverKey) {
 		this.logEvent('handleServerKey', 'Received server key');
-		localStorage.removeItem(this.SERVER_KEY_STORAGE);
-		localStorage.setItem(this.SERVER_KEY_STORAGE, serverKey);
+
+		if (!this.isString(serverKey) || !/^[A-Za-z0-9+/=]+$/.test(serverKey)) {
+			if (this.callbacks.onServerTrustError) {
+				this.callbacks.onServerTrustError({ reason: 'invalid-key' })
+			}
+			this.credentials = null;
+			this.disconnect();
+			return false
+		}
+
+		const storageKey = this.getServerKeyStorageKey();
+		const pinnedKey = localStorage.getItem(storageKey);
+
+		if (pinnedKey && pinnedKey !== serverKey) {
+			let trustNewKey = false;
+
+			if (this.callbacks.onServerKeyChanged) {
+				try {
+					trustNewKey = await this.callbacks.onServerKeyChanged({
+						oldKey: pinnedKey,
+						newKey: serverKey,
+						storageKey
+					})
+				} catch (error) {
+					this.logEvent('handleServerKey-callback', error, 'error')
+				}
+			}
+
+			if (!trustNewKey) {
+				if (this.callbacks.onServerTrustError) {
+					this.callbacks.onServerTrustError({ reason: 'key-changed' })
+				}
+				this.credentials = null;
+				this.disconnect();
+				return false
+			}
+		}
+
+		localStorage.setItem(storageKey, serverKey);
+		if (storageKey !== this.SERVER_KEY_STORAGE) {
+			localStorage.removeItem(this.SERVER_KEY_STORAGE)
+		}
 		this.config.rsaPublic = serverKey;
 		return true
 	}

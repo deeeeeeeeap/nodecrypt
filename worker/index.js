@@ -1,13 +1,30 @@
 import { generateClientId, encryptMessage, decryptMessage, logEvent, isString, isObject, getTime } from './utils.js';
 
+const DEFAULT_ROOM_OBJECT = 'room:default';
+const ROOM_HASH_PATTERN = /^[a-f0-9]{64}$/i;
+const SEEN_TIMEOUT_MS = 60000;
+const HISTORY_MAX_MESSAGES = 100;
+const HISTORY_MAX_BYTES = 256 * 1024;
+const HISTORY_MAX_ENTRY_BYTES = 16 * 1024;
+
+function getRoomObjectName(url) {
+  const roomHash = url.searchParams.get('room');
+
+  if (roomHash && ROOM_HASH_PATTERN.test(roomHash)) {
+    return `room:${roomHash.toLowerCase()}`;
+  }
+
+  return DEFAULT_ROOM_OBJECT;
+}
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     // 处理WebSocket请求
     const upgradeHeader = request.headers.get('Upgrade');
-    if (upgradeHeader && upgradeHeader === 'websocket') {
-      const id = env.CHAT_ROOM.idFromName('chat-room');
+    if (upgradeHeader && upgradeHeader.toLowerCase() === 'websocket') {
+      const id = env.CHAT_ROOM.idFromName(getRoomObjectName(url));
       const stub = env.CHAT_ROOM.get(id);
       return stub.fetch(request);
     }
@@ -29,14 +46,17 @@ export class ChatRoom {  constructor(state, env) {
     // Use objects like original server.js instead of Maps
     this.clients = {};
     this.channels = {};
+    this.historyBacklogs = {};
     
     this.config = {
-      seenTimeout: 60000,
+      seenTimeout: SEEN_TIMEOUT_MS,
+      historyMaxMessages: HISTORY_MAX_MESSAGES,
+      historyMaxBytes: HISTORY_MAX_BYTES,
       debug: false
     };
     
-    // Initialize RSA key pair
-    this.initRSAKeyPair();
+    // Serialize startup storage access so concurrent WebSocket upgrades cannot race key generation.
+    this.ready = this.state.blockConcurrencyWhile(() => this.initRSAKeyPair());
   }
 
   async initRSAKeyPair() {
@@ -63,8 +83,7 @@ export class ChatRoom {  constructor(state, env) {
         
         stored = {
           rsaPublic: btoa(String.fromCharCode(...new Uint8Array(publicKeyBuffer))),
-          rsaPrivateData: Array.from(new Uint8Array(privateKeyBuffer)),
-          createdAt: Date.now() // 记录密钥创建时间，用于后续判断是否需要轮换
+          rsaPrivateData: Array.from(new Uint8Array(privateKeyBuffer))
         };
         
         await this.state.storage.put('rsaKeyPair', stored);
@@ -86,20 +105,6 @@ export class ChatRoom {  constructor(state, env) {
           ['sign']
         );      }
         this.keyPair = stored;
-      
-      // 检查密钥是否需要轮换（如果已创建超过24小时）
-      if (stored.createdAt && (Date.now() - stored.createdAt > 24 * 60 * 60 * 1000)) {
-        // 如果没有任何客户端，则执行密钥轮换
-        if (Object.keys(this.clients).length === 0) {
-          console.log('密钥已使用24小时，进行轮换...');
-          await this.state.storage.delete('rsaKeyPair');
-          this.keyPair = null;
-          await this.initRSAKeyPair();
-        } else {
-          // 否则标记需要在客户端全部断开后进行轮换
-          await this.state.storage.put('pendingKeyRotation', true);
-        }
-      }
     } catch (error) {
       console.error('Error initializing RSA key pair:', error);
       throw error;
@@ -109,11 +114,12 @@ export class ChatRoom {  constructor(state, env) {
   async fetch(request) {
     // Check for WebSocket upgrade
     const upgradeHeader = request.headers.get('Upgrade');
-    if (!upgradeHeader || upgradeHeader !== 'websocket') {
+    if (!upgradeHeader || upgradeHeader.toLowerCase() !== 'websocket') {
       return new Response('Expected WebSocket Upgrade', { status: 426 });
     }
 
-    // Ensure RSA keys are initialized
+    // Ensure RSA keys are initialized before accepting the session.
+    await this.ready;
     if (!this.keyPair) {
       await this.initRSAKeyPair();
     }
@@ -244,33 +250,12 @@ export class ChatRoom {  constructor(state, env) {
     connection.addEventListener('close', async (event) => {
       logEvent('close', [clientId, event], 'debug');
 
-      const channel = this.clients[clientId].channel;
-
-      if (channel && this.channels[channel]) {
-        this.channels[channel].splice(this.channels[channel].indexOf(clientId), 1);
-
-        if (this.channels[channel].length === 0) {
-          delete(this.channels[channel]);
-        } else {
-          try {
-            const members = this.channels[channel];
-
-            for (const member of members) {
-              const client = this.clients[member];              if (this.isClientInChannel(client, channel)) {
-                this.sendMessage(client.connection, encryptMessage({
-                  a: 'l',
-                  p: members.filter((value) => {
-                    return (value !== member ? true : false);
-                  })
-                }, client.shared));
-              }
-            }
-
-          } catch (error) {
-            logEvent('close-list', [clientId, error], 'error');
-          }
-        }
+      const client = this.clients[clientId];
+      if (!client) {
+        return;
       }
+
+      this.removeClientFromChannel(clientId, client.channel);
 
       if (this.clients[clientId]) {
         delete(this.clients[clientId]);
@@ -298,6 +283,8 @@ export class ChatRoom {  constructor(state, env) {
         this.handleClientMessage(clientId, decrypted);
       } else if (action === 'w') {
         this.handleChannelMessage(clientId, decrypted);
+      } else if (action === 'h') {
+        this.handleHistoryMessage(clientId, decrypted);
       }
 
     } catch (error) {
@@ -323,6 +310,7 @@ export class ChatRoom {  constructor(state, env) {
         this.channels[channel].push(clientId);
       }
 
+      this.sendHistoryBacklog(clientId, channel);
       this.broadcastMemberList(channel);
 
     } catch (error) {
@@ -386,6 +374,59 @@ export class ChatRoom {  constructor(state, env) {
       logEvent('message-channel', [clientId, error], 'error');
     }
   }
+  // Cache room-history ciphertext. The Worker never decrypts message content.
+  handleHistoryMessage(clientId, decrypted) {
+    if (!isString(decrypted.p) || !this.clients[clientId].channel) {
+      return;
+    }
+
+    try {
+      const channel = this.clients[clientId].channel;
+      this.appendHistoryEntry(channel, decrypted.p);
+    } catch (error) {
+      logEvent('message-history', [clientId, error], 'error');
+    }
+  }
+  appendHistoryEntry(channel, encryptedHistory) {
+    if (!channel || !isString(encryptedHistory) || encryptedHistory.length > HISTORY_MAX_ENTRY_BYTES) {
+      return;
+    }
+
+    if (!this.historyBacklogs[channel]) {
+      this.historyBacklogs[channel] = [];
+    }
+
+    const backlog = this.historyBacklogs[channel];
+    backlog.push(encryptedHistory);
+
+    while (backlog.length > this.config.historyMaxMessages) {
+      backlog.shift();
+    }
+
+    let totalBytes = backlog.reduce((sum, item) => sum + item.length, 0);
+    while (totalBytes > this.config.historyMaxBytes && backlog.length > 0) {
+      const removed = backlog.shift();
+      totalBytes -= removed ? removed.length : 0;
+    }
+  }
+  sendHistoryBacklog(clientId, channel) {
+    try {
+      const client = this.clients[clientId];
+      const backlog = this.historyBacklogs[channel];
+
+      if (!this.isClientInChannel(client, channel) || !backlog || backlog.length === 0) {
+        return;
+      }
+
+      const encrypted = encryptMessage({
+        a: 'h',
+        p: backlog
+      }, client.shared);
+      this.sendMessage(client.connection, encrypted);
+    } catch (error) {
+      logEvent('history-backlog', [clientId, error], 'error');
+    }
+  }
   // Broadcast member list to channel
   broadcastMemberList(channel) {
     try {
@@ -411,7 +452,29 @@ export class ChatRoom {  constructor(state, env) {
     } catch (error) {
       logEvent('broadcast-member-list', error, 'error');
     }
-  }  // Check if client is in channel
+  }
+  // Remove a client from its channel and notify remaining members.
+  removeClientFromChannel(clientId, channel, notifyMembers = true) {
+    if (!channel || !this.channels[channel]) {
+      return;
+    }
+
+    const index = this.channels[channel].indexOf(clientId);
+    if (index >= 0) {
+      this.channels[channel].splice(index, 1);
+    }
+
+    if (this.channels[channel].length === 0) {
+      delete(this.channels[channel]);
+      delete(this.historyBacklogs[channel]);
+      return;
+    }
+
+    if (notifyMembers) {
+      this.broadcastMemberList(channel);
+    }
+  }
+  // Check if client is in channel
   isClientInChannel(client, channel) {
     return (
       client &&
@@ -457,23 +520,12 @@ export class ChatRoom {  constructor(state, env) {
     for (const clientId of clientsToRemove) {
       try {
         logEvent('connection-seen', clientId, 'debug');
+        this.removeClientFromChannel(clientId, this.clients[clientId].channel);
         this.clients[clientId].connection.close();
         delete this.clients[clientId];
       } catch (error) {
         logEvent('connection-seen', error, 'error');      }
     }
-    
-    // 如果没有任何客户端和房间，检查是否需要轮换密钥
-    if (Object.keys(this.clients).length === 0 && Object.keys(this.channels).length === 0) {
-      const pendingRotation = await this.state.storage.get('pendingKeyRotation');
-      if (pendingRotation) {
-        console.log('没有活跃客户端或房间，执行密钥轮换...');
-        await this.state.storage.delete('rsaKeyPair');        await this.state.storage.delete('pendingKeyRotation');
-        this.keyPair = null;
-        await this.initRSAKeyPair();
-      }
-    }
-    
     return clientsToRemove.length; // 返回清理的连接数量
   }
 }
