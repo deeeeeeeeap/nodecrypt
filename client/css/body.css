@@ -53,10 +53,10 @@ body {
 	position: absolute;
 	inset: 0;
 	background-image: url("https://image.757605.xyz/8b0ac4dee37ed5286f4f6ad1cc4b6c28.png");
-	background-position: center top;
+	background-position: center center;
 	background-repeat: no-repeat;
 	background-size: cover;
-	opacity: 0.13;
+	opacity: 0.45;
 	z-index: -2;
 }
 
@@ -64,7 +64,7 @@ body {
 	content: "";
 	position: absolute;
 	inset: 0;
-	background: rgba(255, 255, 255, 0.72);
+	background: rgba(255, 255, 255, 0.36);
 	z-index: -1;
 }
 
