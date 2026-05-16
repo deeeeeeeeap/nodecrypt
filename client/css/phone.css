@@ -78,7 +78,7 @@
 		top: 0;
 		width: 60vw !important;
 		bottom: 0;
-		z-index: 1000;
+		z-index: 1300;
 		height: 100dvh;
 		background: #fff;
 		box-shadow: 2px 0 16px #0002;
@@ -98,7 +98,7 @@
 	.settings-sidebar {
 		transform: translateX(-100%);
 		border-right: 1px solid #e0e0e0;
-		z-index: 1001; /* Higher than normal sidebar */
+		z-index: 1310;
 	}
 
 	.settings-sidebar.mobile-open {
@@ -125,7 +125,7 @@
 		right: 0;
 		bottom: 0;
 		background: rgba(0, 0, 0, 0.18);
-		z-index: 999;
+		z-index: 1250;
 	}
 
 	.mobile-sidebar-mask.active,
