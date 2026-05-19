@@ -7,21 +7,17 @@
 ### Method 1: One-Click Deploy to Cloudflare Workers
 
 Click the button below for one-click deployment to Cloudflare Workers:
-[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button?projectName=NodeCrypt)](https://deploy.workers.cloudflare.com/?url=https://github.com/shuaiplus/NodeCrypt)
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button?projectName=nodecrypt)](https://deploy.workers.cloudflare.com/?url=https://github.com/deeeeeeeeap/nodecrypt)
 > Note: This method creates a new project based on the main repository. Future updates to the main repository will not be automatically synchronized.
 
-### Method 2: Auto-Sync Fork and Deploy (Recommended for Long-term Maintenance)
+### Method 2: Fork and Deploy from Your Own Repository
 1. First, fork this project to your own GitHub account.
 2. Open the Cloudflare Workers console, select "Import from GitHub," and choose your forked repository for deployment.
-> This project has built-in auto-sync workflow. After forking, no action is required. Updates from the main repository will automatically sync to your fork, and Cloudflare will automatically redeploy without manual maintenance.
+> This is better for long-term maintenance. If you want updates from this repository later, sync or merge them into your fork manually.
 
-### Method 3: Docker One-Click Deployment (Recommended for Self-hosting)
+### Method 3: Docker Deployment
 
-```bash
-docker run -d --name nodecrypt -p 80:80 ghcr.io/shuaiplus/nodecrypt
-```
-
-Access http://localhost:80
+This fork is optimized for Cloudflare Workers. A Docker image is not published for this repository; use the Worker deployment path above for production.
 
 ### Method 4: Local Development Deployment
 After cloning the project and installing dependencies, use `npm run dev` to start the development server.

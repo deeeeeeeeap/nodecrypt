@@ -1,196 +1,196 @@
 # NodeCrypt
 
-🌐 **[English README](README_EN.md)**
+NodeCrypt 是一个面向 Cloudflare Workers 部署的端到端加密临时群聊项目。它不需要账号系统，不保存聊天明文；服务端只负责 WebSocket 转发、房间成员协调，以及在房间仍有成员在线时缓存一份加密后的临时文本历史。
 
-## 🚀 部署说明
+> 当前仓库：[`deeeeeeeeap/nodecrypt`](https://github.com/deeeeeeeeap/nodecrypt)
 
-### 方法一：一键部署到 Cloudflare Workers
+## 一键部署到 Cloudflare Workers
 
-点击下方按钮即可一键部署到 Cloudflare Workers：
-[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button?projectName=NodeCrypt)](https://deploy.workers.cloudflare.com/?url=https://github.com/shuaiplus/NodeCrypt)
+点击下面按钮，会基于本仓库创建 Cloudflare Workers 项目：
 
-- 构建命令：npm run build
-- 部署命令：npm run deploy
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button?projectName=nodecrypt)](https://deploy.workers.cloudflare.com/?url=https://github.com/deeeeeeeeap/nodecrypt)
 
-> 注意：此方式会基于主仓库创建新项目，后续主仓库更新不会自动同步（项目已成型，很少更新，可以直接使用方法一）。
+Cloudflare 会读取本仓库的配置：
 
-### 方法二：自动同步 fork 并部署（推荐长期维护）
-1. 先 fork 本项目到你自己的 GitHub 账号。
-2. 打开 Cloudflare Workers 控制台，选择“从 GitHub 导入”，并选择你 fork 的仓库进行部署。
+- Worker 入口：`worker/index.js`
+- 静态资源目录：`dist`
+- 构建命令：`npm run build`
+- 部署命令：`npm run deploy`
+- Durable Object：`ChatRoom`
 
-- 构建命令：npm run build
-- 部署命令：npm run deploy
+说明：
 
-> 本项目已内置自动同步 workflow，fork 后无需任何操作，主仓库的更新会自动同步到你的 fork 仓库，Cloudflare 也会自动重新部署，无需手动维护。
+- 一键部署适合快速创建一个独立 Worker。
+- 如果你希望后续持续跟随本仓库更新，建议先 Fork 本仓库，再在 Cloudflare 中连接自己的 Fork。
+- 部署后建议绑定自定义域名并使用 HTTPS。本项目 Worker 侧已经处理 HTTP 到 HTTPS 的跳转。
 
-### 方法三：Docker 一键部署（不稳定，不建议）
+## 功能特性
 
-```bash
-docker run -d --name nodecrypt -p 80:80 ghcr.io/shuaiplus/nodecrypt
+- **端到端加密聊天**：聊天内容在客户端加密和解密，服务端不保存明文。
+- **Cloudflare Workers 原生部署**：使用 Worker + Durable Object 承载 WebSocket 房间。
+- **临时群聊历史**：新加入同一节点的人可以看到当前活动期内的历史文本消息；房间无人后历史清空。
+- **节点名 + 密码隔离**：同一个节点名配不同密码，会进入相互隔离的房间。
+- **无需注册账号**：输入用户名、节点名和可选密码即可进入。
+- **私聊、图片、文件、表情**：支持基础聊天增强能力。
+- **移动端适配**：已针对手机登录页、聊天页、抽屉侧边栏做适配。
+- **静态资源缓存优化**：构建产物使用 hash 文件名，Worker 对 assets 设置长期缓存。
+
+## 临时历史的边界
+
+NodeCrypt 的历史消息不是永久数据库。
+
+- 只缓存公共文本消息。
+- 图片、文件、私聊不会进入临时历史。
+- 历史内容在客户端使用房间名和密码派生的密钥加密，Worker 只缓存密文。
+- 新成员必须使用完全相同的节点名和密码，才能解密当前活动期历史。
+- 当房间所有成员离开后，Durable Object 内存中的临时历史会清空。
+
+这个设计适合临时协作、短会话群聊、一次性分享，不适合作为长期消息归档工具。
+
+## 架构概览
+
+```mermaid
+flowchart LR
+  A["浏览器客户端"] <-->|"WebSocket / 加密载荷"| B["Cloudflare Worker"]
+  B --> C["Durable Object: ChatRoom"]
+  C --> D["在线成员列表"]
+  C --> E["活动期密文历史"]
+  A <-->|"端到端加密消息"| A2["其他浏览器客户端"]
 ```
 
-！ 必须开启HTTPS，不然传输密钥会失败，导致无法进入房间。
+主要模块：
 
-### 方法四：本地开发部署
-克隆项目并安装依赖后，使用 `npm run dev` 启动开发服务器。
-使用 `npm run deploy` 部署到 Cloudflare Workers。
+- `client/`：前端页面、聊天 UI、加密逻辑、文件和图片处理。
+- `worker/`：Cloudflare Worker 入口与 Durable Object 房间逻辑。
+- `scripts/cloudflare-smoke.mjs`：本地 Worker smoke 测试。
+- `wrangler.toml`：Cloudflare Workers、Assets、Durable Object 配置。
 
-部署前建议执行：
+## 加密与房间隔离
+
+当前实现包含三层关键保护：
+
+1. **Worker 房间隔离**
+   - 客户端会基于节点名和密码生成房间 scope。
+   - Worker 根据 room hash 路由到对应 Durable Object。
+   - 同节点名、不同密码会进入不同房间。
+
+2. **服务端身份校验**
+   - 每个 Durable Object 房间持久保存 RSA 身份密钥。
+   - 客户端使用 TOFU 方式固定服务端身份，降低中间人替换风险。
+
+3. **客户端内容加密**
+   - 客户端之间使用 ECDH 派生共享密钥。
+   - 实际聊天内容使用客户端侧密钥加密。
+   - 服务端只看到加密载荷。
+
+## 本地开发
+
+环境要求：
+
+- Node.js
+- npm
+- Cloudflare Wrangler
+
+安装依赖：
 
 ```bash
 npm install
+```
+
+启动本地 Worker：
+
+```bash
+npm run dev
+```
+
+构建前端：
+
+```bash
+npm run build
+```
+
+部署到 Cloudflare：
+
+```bash
+npm run deploy
+```
+
+## 部署前检查
+
+常用检查命令：
+
+```bash
 npm run build
 npx wrangler deploy --dry-run
 npm run smoke:cloudflare
 ```
 
-`smoke:cloudflare` 会本地启动 `wrangler dev`，用浏览器自动验证 Cloudflare Worker + Durable Object WebSocket、实时群聊、活动期临时历史、房间无人后清空历史等关键路径。
+说明：
 
-### 临时历史消息边界
+- `npm run build`：生成 `dist` 静态资源。
+- `npx wrangler deploy --dry-run`：检查 Worker、Assets、Durable Object 配置是否能被 Wrangler 正确打包。
+- `npm run smoke:cloudflare`：本地启动 `wrangler dev`，自动验证 WebSocket、群聊、临时历史、错误密码隔离、房间无人后历史清空等关键路径。
 
-- 仅缓存公共文本消息；图片、文件、私聊不会进入临时历史。
-- 历史内容在客户端使用房间名/密码派生密钥加密，Worker 和自托管服务端只缓存密文。
-- 新成员必须使用相同房间名和密码，才能解密当前活动期文本历史。
-- 房间所有成员离开后，内存中的临时历史立即清空。
-- Worker 部署会在每个房间 Durable Object 中持久保存 RSA 身份密钥，用于稳定 TOFU 身份校验；这不包含聊天明文。
+如果只是改 README 或纯样式小修，不一定需要跑完整 smoke。
 
-## 📝 项目简介
+## Cloudflare 配置要点
 
-NodeCrypt 是一个真正的端到端加密聊天系统，实现完全的零知识架构。整个系统设计确保服务器、网络中间人、甚至系统管理员都无法获取任何明文消息内容。所有加密和解密操作都在客户端本地进行，服务器仅作为加密数据的盲中继。
+`wrangler.toml` 已包含当前部署所需配置：
 
-### 系统架构
-- **前端**：ES6+ 模块化 JavaScript，无框架依赖
-- **后端**：Cloudflare Workers + Durable Objects
-- **通信**：WebSocket 实时双向通信
-- **构建**：Vite 现代化构建工具
+```toml
+name = "nodecrypt"
+main = "worker/index.js"
+compatibility_date = "2026-05-15"
+compatibility_flags = ["nodejs_compat"]
 
-## 🔐 零知识架构设计
+[assets]
+directory = "./dist"
+not_found_handling = "single-page-application"
+run_worker_first = true
+binding = "ASSETS"
 
-### 核心原则
-- **服务器盲转**：服务器永远无法解密消息内容，仅负责加密数据中转
-- **无明文消息数据库**：服务器不保存明文消息；Worker 仅持久化每个房间的 RSA 身份密钥，文本历史只在房间活跃期以内存密文缓存
-- **端到端加密**：消息从发送方到接收方全程加密，中间任何节点都无法解密
-- **临时历史**：文本消息仅在房间仍有活跃成员时以密文缓存，所有成员离开后立即清空
-- **匿名通信**：用户无需注册真实身份，支持临时匿名聊天
-- **多样体验**：和批量发送图片和文件，可选择主题和语言。
+[durable_objects]
+bindings = [
+  { name = "CHAT_ROOM", class_name = "ChatRoom" }
+]
 
-### 隐私保护机制
-
-- **实时成员提醒**：房间在线列表完全透明，内任何人加入或离开都会实时通知所有成员，
-- **活动期历史消息**：新加入且知道房间密码的用户可解密当前活动期的临时文本历史；房间无人后历史销毁
-- **私聊加密**：点击用户头像可发起端到端加密的私密对话，房间内其他成员完全无法看到私聊内容
-
-### 房间密码机制
-
-房间密码作为**密钥派生因子**参与端到端加密：`最终共享密钥 = SHA256(ECDH_共享密钥 + SHA256(房间密码))`
-
-- **密码错误隔离**：不同密码的房间无法解密彼此的消息
-- **服务器盲区**：服务器永远无法获知房间密码
-
-### 三层安全体系
-
-#### 第一层：RSA-2048 服务器身份验证
-- Worker 为每个房间 Durable Object 持久保存 RSA-2048 身份密钥，客户端采用 TOFU 方式固定并校验服务端公钥
-- 客户端连接时验证服务器公钥，防止中间人攻击
-- Worker 部署中，房间 Durable Object 的 RSA 私钥材料保存在该对象的存储/运行时中以保持身份稳定，不暴露给客户端；Docker/本地模式仍为进程内临时密钥
-
-#### 第二层：ECDH-P384 密钥协商
-- 每个客户端生成独立的椭圆曲线密钥对（P-384曲线）
-- 通过椭圆曲线 Diffie-Hellman 密钥交换协议建立共享密钥
-- 每个客户端与服务器之间拥有独立的加密通道
-
-#### 第三层：混合对称加密
-- **服务器通信**：使用 AES-256-CBC 加密客户端与服务器间的控制消息
-- **客户端通信**：使用 AES-256-GCM 加密并认证客户端之间的实际聊天内容
-- 每条消息使用独立的初始化向量（IV）/Nonce 和认证标签
-
-## 🔄 完整加密流程详解
-
-```mermaid
-sequenceDiagram
-    participant C as 客户端
-    participant S as 服务器
-    participant O as 其他客户端
-
-    Note over C,S: 阶段1: 服务器身份验证 (RSA-2048)
-    C->>S: WebSocket连接
-    S->>C: RSA-2048公钥
-    
-    Note over C,S: 阶段2: 客户端-服务器密钥交换 (P-384 ECDH)
-    C->>S: P-384 ECDH公钥
-    S->>C: P-384公钥 + RSA签名
-    Note over C: 验证RSA签名并派生AES-256密钥
-    Note over S: 从P-384 ECDH派生AES-256密钥
-    
-    Note over C,S: 阶段3: 房间认证
-    C->>S: 加入请求 (房间哈希，AES-256加密)
-    Note over S: 将客户端添加到房间/频道
-    S->>C: 成员列表 (其他客户端ID，加密)
-      Note over C,O: 阶段4: 客户端间密钥交换 (P-384 ECDH)
-    Note over C: 为每个成员生成P-384密钥对
-    C->>S: P-384公钥包 (AES-256加密)
-    S->>O: 转发客户端C的公钥
-    O->>S: 返回其他客户端的P-384公钥
-    S->>C: 转发其他客户端的公钥
-    
-    Note over C,O: 阶段5: 密码增强密钥派生
-    Note over C: 客户端密钥 = SHA256(ECDH_P-384(自己私钥, 对方公钥) + SHA256(密码))
-    Note over O: 客户端密钥 = SHA256(ECDH_P-384(自己私钥, 对方公钥) + SHA256(密码))
-    
-    Note over C,O: 阶段6: 身份验证
-    C->>S: 用户名 (用客户端密钥AES-GCM加密)
-    S->>O: 转发加密用户名
-    O->>S: 用户名 (用客户端密钥AES-GCM加密)
-    S->>C: 转发加密用户名
-    Note over C,O: 双方客户端现在验证彼此身份    Note over C,O: 阶段7: 安全消息传输 (双层加密)
-    Note over C: 1. AES-GCM加密并认证消息内容<br/>2. AES-256加密传输层包装
-    C->>S: 双层加密消息
-    Note over S: 解密AES-256传输层<br/>提取AES-GCM加密数据<br/>无法解密消息内容
-    S->>O: 转发AES-GCM加密数据
-    Note over O: 解密AES-256传输层<br/>AES-GCM认证并解密获得消息内容
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ChatRoom"]
 ```
 
+首次部署 Durable Object 时，Cloudflare 会根据 migrations 创建对应类。后续如果修改 Durable Object 类名或新增类，需要同步更新 migrations。
 
-## 🛠️ 技术实现
+## 使用建议
 
-- **Web Cryptography API**：浏览器原生 P-384 ECDH 与 AES-GCM 加密实现
-- **aes-js**：纯 JavaScript AES 实现，支持多种模式
-- **js-sha256**：SHA-256 哈希算法实现
+- 节点名和密码需要完整一致，成员才能进入同一个房间。
+- 需要一定安全性的房间应设置较强密码。
+- 不要把节点名和密码发到公开渠道。
+- 不要把 NodeCrypt 当作永久消息存储使用。
+- 推荐使用现代浏览器，并通过 HTTPS 访问。
 
-## 🔬 安全验证
+## 常见问题
 
-### 加密过程验证
-用户可通过浏览器开发者工具观察完整的加密解密过程，验证消息在传输过程中确实处于加密状态。
+### 为什么新人能看到之前消息？
 
-### 网络流量分析
-使用网络抓包工具可以验证所有 WebSocket 传输的数据都是不可读的加密内容。
+只要房间里仍有成员在线，Worker 会保留当前活动期的公共文本密文历史。新成员使用相同节点名和密码进入后，可以解密这些历史。
 
-### 代码安全审计
-所有加密相关代码完全开源，使用标准密码学算法，欢迎安全研究者进行独立审计。
+### 为什么所有人离开后历史没了？
 
-## ⚠️ 安全建议
+这是设计目标。房间无人后，临时历史会被清空，避免变成长期消息库。
 
-- **使用强房间密码**：房间密码直接影响端到端加密强度，建议使用复杂密码
-- **密码保密性**：房间密码一旦泄露，该房间所有通信内容都可能被解密
-- **使用最新版本的现代浏览器**：确保密码学API的安全性和性能
+### 忘记密码还能恢复历史吗？
 
-## 🤝 安全贡献
+不能。密码参与房间隔离和历史解密。密码不同会进入另一个独立房间，也无法解密原房间历史。
 
-欢迎安全研究者报告漏洞和进行安全审计。严重安全问题将在24小时内修复。
+### 可以不用 Cloudflare Workers 吗？
 
-## 📄 开源协议
+当前主线目标是 Cloudflare Workers 部署。仓库里保留了部分本地/服务端历史结构，但推荐生产部署使用 Worker + Durable Object。
 
-本项目采用 ISC 开源协议。
+## 开源协议
 
-## ⚠️ 免责声明
-
-本项目仅供学习和技术研究使用，不得用于任何违法犯罪活动。使用者应遵守所在国家和地区的相关法律法规。项目作者不承担因使用本软件而产生的任何法律责任。请在合法合规的前提下使用本项目。
+本项目使用 ISC License。
 
 ---
-## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=shuaiplus/NodeCrypt&type=Timeline)](https://www.star-history.com/#shuaiplus/NodeCrypt&Timeline)
-
-**NodeCrypt** - 真正的端到端加密通信 🔐
-
-*"在数字时代，加密是保护隐私的最后一道防线"*
+**NodeCrypt** - 临时、安全、无需账号的端到端加密节点群聊。
