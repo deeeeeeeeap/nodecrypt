@@ -2,14 +2,26 @@
 // 导入必要的模块
 import { deflate, inflate } from 'fflate';
 import { showFileUploadModal } from './util.fileUpload.js';
+import { t } from './util.i18n.js';
 
 // 分卷大小统一配置
 const DEFAULT_VOLUME_SIZE = 256 * 1024; // 256KB
-const MAX_FILE_VOLUMES = 4096;
+const MIN_VOLUME_SIZE = 32 * 1024;
+const MAX_FILE_VOLUMES = 32768;
 const MAX_VOLUME_DATA_LENGTH = Math.ceil(DEFAULT_VOLUME_SIZE / 3) * 4 + 1024;
 const MAX_FILE_NAME_LENGTH = 255;
 const MAX_FILE_COUNT = 200;
+const DIRECT_TRANSFER_THRESHOLD = 8 * 1024 * 1024;
+const MAX_SINGLE_FILE_SIZE = 1024 * 1024 * 1024;
+const MAX_ARCHIVE_FAST_PATH_SIZE = 64 * 1024 * 1024;
+const COMPLETED_TRANSFER_TTL_MS = 60 * 60 * 1000;
+const FAST_DEFLATE_LEVEL = 3;
+const PUBLIC_PAYLOAD_SAFETY_FACTOR = 3;
 const FILE_ID_PATTERN = /^file_[a-f0-9-]{16,80}$/i;
+const DIRECT_TRANSFER_EXTENSIONS = new Set([
+	'7z', 'avi', 'br', 'bz2', 'gif', 'gz', 'heic', 'jpeg', 'jpg', 'm4a', 'm4v',
+	'mkv', 'mov', 'mp3', 'mp4', 'ogg', 'png', 'rar', 'webm', 'webp', 'xz', 'zip'
+]);
 
 // File transfer state management
 // 文件传输状态管理
@@ -79,7 +91,7 @@ async function compressFileToVolumes(file, volumeSize = DEFAULT_VOLUME_SIZE) { /
 				// Use single compression pass with balanced compression
 				// 使用单次压缩，平衡压缩率和速度
 				deflate(arrayBuffer, { 
-					level: 6, // 平衡压缩级别
+					level: FAST_DEFLATE_LEVEL, // 平衡压缩级别
 					mem: 8    // 合理内存使用
 				}, (err, compressed) => {
 					if (err) {
@@ -163,7 +175,7 @@ async function compressFilesToArchive(files, volumeSize = DEFAULT_VOLUME_SIZE) {
 		// Compress the archive
 		return new Promise((resolve, reject) => {
 			deflate(combinedData, { 
-				level: 6,
+				level: FAST_DEFLATE_LEVEL,
 				mem: 8
 			}, (err, compressed) => {
 				if (err) {
@@ -195,6 +207,48 @@ async function compressFilesToArchive(files, volumeSize = DEFAULT_VOLUME_SIZE) {
 
 // Helper function to read file as array buffer
 // 辅助函数：将文件读取为ArrayBuffer
+function getFileExtension(fileName) {
+	const parts = String(fileName || '').toLowerCase().split('.');
+	return parts.length > 1 ? parts.pop() : ''
+}
+
+function shouldUseDirectTransfer(file) {
+	return file.size > 0 && (file.size >= DIRECT_TRANSFER_THRESHOLD || DIRECT_TRANSFER_EXTENSIONS.has(getFileExtension(file.name)))
+}
+
+function alignVolumeSize(size) {
+	return Math.max(MIN_VOLUME_SIZE, Math.min(DEFAULT_VOLUME_SIZE, Math.floor(size / MIN_VOLUME_SIZE) * MIN_VOLUME_SIZE || MIN_VOLUME_SIZE))
+}
+
+function chooseVolumeSize(recipientCount = 1) {
+	const recipients = Math.max(1, Number.isFinite(recipientCount) ? recipientCount : 1);
+	const budgetPerRecipient = Math.floor((8 * 1024 * 1024) / (recipients * PUBLIC_PAYLOAD_SAFETY_FACTOR));
+	return alignVolumeSize(budgetPerRecipient)
+}
+
+function countVolumes(byteLength, volumeSize) {
+	return Math.max(1, Math.ceil(byteLength / volumeSize))
+}
+
+async function readFileSliceAsUint8Array(file, start, end) {
+	return new Uint8Array(await file.slice(start, end).arrayBuffer())
+}
+
+function yieldToBrowser() {
+	return new Promise(resolve => setTimeout(resolve, 0))
+}
+
+function scheduleCompletedTransferCleanup(fileId) {
+	const transfer = window.fileTransfers.get(fileId);
+	if (!transfer || transfer.cleanupTimer) return;
+	transfer.cleanupTimer = setTimeout(() => {
+		const latest = window.fileTransfers.get(fileId);
+		if (latest && latest.status === 'completed') {
+			window.fileTransfers.delete(fileId)
+		}
+	}, COMPLETED_TRANSFER_TTL_MS)
+}
+
 function readFileAsArrayBuffer(file) {
 	return new Promise((resolve, reject) => {
 		const reader = new FileReader();
@@ -204,23 +258,47 @@ function readFileAsArrayBuffer(file) {
 	});
 }
 
+function combineVolumeData(volumes) {
+	const combinedData = volumes.map(volume => base64ToArrayBuffer(volume));
+	const totalLength = combinedData.reduce((sum, arr) => sum + arr.length, 0);
+	const combined = new Uint8Array(totalLength);
+	let offset = 0;
+
+	for (const data of combinedData) {
+		combined.set(data, offset);
+		offset += data.length;
+	}
+	return combined
+}
+
+function saveUint8ArrayAsFile(data, fileName) {
+	const blob = new Blob([data]);
+	const url = URL.createObjectURL(blob);
+	const a = document.createElement('a');
+	a.href = url;
+	a.download = fileName;
+	document.body.appendChild(a);
+	a.click();
+	document.body.removeChild(a);
+	URL.revokeObjectURL(url);
+}
+
+async function downloadRawVolumesToFile(volumes, fileName, originalHash = null) {
+	const data = combineVolumeData(volumes);
+	if (originalHash) {
+		const calculatedHash = await calculateHash(data);
+		if (calculatedHash !== originalHash) {
+			throw new Error('File integrity check failed: hash mismatch')
+		}
+	}
+	saveUint8ArrayAsFile(data, fileName)
+}
+
 // Decompress volumes back to file
 // 将分卷解压回文件
 async function decompressVolumesToFile(volumes, fileName, originalHash = null) {
 	try {
-		// Combine all volumes using base64 decoding
-		const combinedData = volumes.map(volume => {
-			return base64ToArrayBuffer(volume);
-		});
-		
-		const totalLength = combinedData.reduce((sum, arr) => sum + arr.length, 0);
-		const compressed = new Uint8Array(totalLength);
-		let offset = 0;
-		
-		for (const data of combinedData) {
-			compressed.set(data, offset);
-			offset += data.length;
-		}
+		const compressed = combineVolumeData(volumes);
 				// Decompress
 		return new Promise((resolve, reject) => {
 			inflate(compressed, async (err, decompressed) => {
@@ -243,16 +321,7 @@ async function decompressVolumesToFile(volumes, fileName, originalHash = null) {
 					}
 				}
 				
-				// Create blob and download
-				const blob = new Blob([decompressed]);
-				const url = URL.createObjectURL(blob);
-				const a = document.createElement('a');
-				a.href = url;
-				a.download = fileName;
-				document.body.appendChild(a);
-				a.click();
-				document.body.removeChild(a);
-				URL.revokeObjectURL(url);
+				saveUint8ArrayAsFile(decompressed, fileName);
 				
 				resolve();
 			});
@@ -267,19 +336,7 @@ async function decompressVolumesToFile(volumes, fileName, originalHash = null) {
 // 将归档分卷解压为多个文件
 async function decompressArchiveToFiles(volumes, fileManifest, archiveHash = null) {
 	try {
-		// Combine all volumes using base64 decoding
-		const combinedData = volumes.map(volume => {
-			return base64ToArrayBuffer(volume);
-		});
-		
-		const totalLength = combinedData.reduce((sum, arr) => sum + arr.length, 0);
-		const compressed = new Uint8Array(totalLength);
-		let offset = 0;
-		
-		for (const data of combinedData) {
-			compressed.set(data, offset);
-			offset += data.length;
-		}
+		const compressed = combineVolumeData(volumes);
 		
 		// Decompress archive
 		return new Promise((resolve, reject) => {
@@ -358,7 +415,8 @@ export function setupFileSend({
 	attachBtnSelector,
 	fileInputSelector,
 	onSend,
-	getCurrentUserName = null
+	getCurrentUserName = null,
+	getRecipientCount = null
 }) {
 	const attachBtn = document.querySelector(attachBtnSelector);
 	
@@ -372,10 +430,11 @@ export function setupFileSend({
 			showFileUploadModal(async (files) => {
 				// 传递 userName 给 onSend
 				const userName = typeof getCurrentUserName === 'function' ? (getCurrentUserName() || '') : '';
+				const recipientCount = typeof getRecipientCount === 'function' ? getRecipientCount() : 1;
 				await handleFilesUpload(files, async (msg) => {
 					// 合并 userName 字段
 					await onSend({ ...msg, userName });
-				});
+				}, { recipientCount });
 			});
 		});
 	}
@@ -401,6 +460,7 @@ function isValidFileStartMessage(message) {
 	if (!isSafeIntegerInRange(message.compressedSize, 0, Number.MAX_SAFE_INTEGER)) return false;
 	if (!isSafeIntegerInRange(message.totalVolumes, 1, MAX_FILE_VOLUMES)) return false;
 	if (!isValidOptionalHash(message.originalHash) || !isValidOptionalHash(message.archiveHash)) return false;
+	if (message.compression !== undefined && !['deflate', 'none'].includes(message.compression)) return false;
 	if (message.fileCount !== undefined && !isSafeIntegerInRange(message.fileCount, 1, MAX_FILE_COUNT)) return false;
 	if (message.fileManifest !== undefined && (!Array.isArray(message.fileManifest) || message.fileManifest.length > MAX_FILE_COUNT)) return false;
 	return true
@@ -428,6 +488,9 @@ function validateSelectedFiles(files) {
 		if (typeof file.name !== 'string' || file.name.length === 0 || file.name.length > MAX_FILE_NAME_LENGTH) {
 			return `File name is too long. Maximum is ${MAX_FILE_NAME_LENGTH} characters.`
 		}
+		if (!Number.isFinite(file.size) || file.size < 0 || file.size > MAX_SINGLE_FILE_SIZE) {
+			return `File is too large. Maximum is ${formatFileSize(MAX_SINGLE_FILE_SIZE)} per file.`
+		}
 	}
 	return ''
 }
@@ -439,9 +502,124 @@ function validateVolumeCount(volumes) {
 	return ''
 }
 
+function validateVolumeTotal(totalVolumes) {
+	if (!isSafeIntegerInRange(totalVolumes, 1, MAX_FILE_VOLUMES)) {
+		return `File is too large to transfer safely. Maximum is ${MAX_FILE_VOLUMES} chunks.`
+	}
+	return ''
+}
+
+async function sendDirectFileVolumes(fileId, file, volumeSize, totalVolumes, onSend, updateProgress) {
+	const fileTransfer = window.fileTransfers.get(fileId);
+	if (!fileTransfer) return;
+
+	for (let i = 0; i < totalVolumes; i++) {
+		const start = i * volumeSize;
+		const end = Math.min(start + volumeSize, file.size);
+		const volume = await readFileSliceAsUint8Array(file, start, end);
+		await onSend({
+			type: 'file_volume',
+			fileId,
+			volumeIndex: i,
+			volumeData: arrayBufferToBase64(volume),
+			isLast: i === totalVolumes - 1
+		});
+
+		fileTransfer.sentVolumes = i + 1;
+		updateFileProgress(fileId);
+		if ((i + 1) % 4 === 0) {
+			await yieldToBrowser()
+		}
+	}
+
+	await onSend({
+		type: 'file_complete',
+		fileId
+	});
+
+	fileTransfer.status = 'completed';
+	scheduleCompletedTransferCleanup(fileId);
+	updateFileProgress(fileId);
+	updateProgress(`Sent ${file.name} successfully`);
+}
+
+async function sendSingleFileTransfer(file, onSend, updateProgress, volumeSize) {
+	const fileId = generateFileId();
+	const useDirect = shouldUseDirectTransfer(file);
+
+	if (useDirect) {
+		const totalVolumes = countVolumes(file.size, volumeSize);
+		const volumeError = validateVolumeTotal(totalVolumes);
+		if (volumeError) {
+			reportFileSendLimit(volumeError);
+			return
+		}
+
+		const fileTransfer = {
+			fileId,
+			fileName: file.name,
+			originalSize: file.size,
+			compressedSize: file.size,
+			totalVolumes,
+			sentVolumes: 0,
+			status: 'sending',
+			compression: 'none'
+		};
+
+		window.fileTransfers.set(fileId, fileTransfer);
+
+		await onSend({
+			type: 'file_start',
+			fileId,
+			fileName: file.name,
+			originalSize: file.size,
+			compressedSize: file.size,
+			totalVolumes,
+			compression: 'none'
+		});
+
+		await sendDirectFileVolumes(fileId, file, volumeSize, totalVolumes, onSend, updateProgress);
+		return
+	}
+
+	const { volumes, originalSize, compressedSize, originalHash } = await compressFileToVolumes(file, volumeSize);
+	const volumeError = validateVolumeCount(volumes);
+	if (volumeError) {
+		reportFileSendLimit(volumeError);
+		return
+	}
+
+	const fileTransfer = {
+		fileId,
+		fileName: file.name,
+		originalSize,
+		compressedSize,
+		totalVolumes: volumes.length,
+		sentVolumes: 0,
+		status: 'sending',
+		originalHash,
+		compression: 'deflate'
+	};
+
+	window.fileTransfers.set(fileId, fileTransfer);
+
+	await onSend({
+		type: 'file_start',
+		fileId,
+		fileName: file.name,
+		originalSize,
+		compressedSize,
+		totalVolumes: volumes.length,
+		originalHash,
+		compression: 'deflate'
+	});
+
+	await sendVolumes(fileId, volumes, onSend, updateProgress, file.name);
+}
+
 // Handle files upload
 // 处理文件上传
-async function handleFilesUpload(files, onSend) {
+async function handleFilesUpload(files, onSend, options = {}) {
 	if (!files || files.length === 0) return;
 
 	const selectedFilesError = validateSelectedFiles(files);
@@ -450,7 +628,8 @@ async function handleFilesUpload(files, onSend) {
 		return
 	}
 	
-	const fileId = generateFileId();
+	const recipientCount = Math.max(1, Number(options.recipientCount) || 1);
+	const volumeSize = chooseVolumeSize(recipientCount);
 	
 	try {
 		// Show compression progress
@@ -464,54 +643,23 @@ async function handleFilesUpload(files, onSend) {
 			// 删除系统提示
 		}
 		
-		if (files.length === 1) {
-			// Single file upload
-			const file = files[0];
-			showProgress();
-			
-			const { volumes, originalSize, compressedSize, originalHash } = await compressFileToVolumes(file);
-			const volumeError = validateVolumeCount(volumes);
-			if (volumeError) {
-				reportFileSendLimit(volumeError);
-				return
+		const totalSelectedSize = files.reduce((sum, file) => sum + file.size, 0);
+		const sendIndividually = files.length === 1 ||
+			totalSelectedSize > MAX_ARCHIVE_FAST_PATH_SIZE ||
+			files.some(file => shouldUseDirectTransfer(file));
+
+		if (sendIndividually) {
+			for (const file of files) {
+				showProgress();
+				await sendSingleFileTransfer(file, onSend, updateProgress, volumeSize);
+				await yieldToBrowser();
 			}
-			
-			updateProgress();
-			
-			// Create file transfer state
-			const fileTransfer = {
-				fileId,
-				fileName: file.name,
-				originalSize,
-				compressedSize,
-				totalVolumes: volumes.length,
-				sentVolumes: 0,
-				status: 'sending',
-				originalHash
-			};
-			
-			window.fileTransfers.set(fileId, fileTransfer);
-			
-			// Send file start message
-			onSend({
-				type: 'file_start',
-				fileId,
-				fileName: file.name,
-				originalSize,
-				compressedSize,
-				totalVolumes: volumes.length,
-				originalHash
-			});
-			
-			// Send volumes
-			await sendVolumes(fileId, volumes, onSend, updateProgress, file.name);
-			
 		} else {
 			// Multiple files upload - create archive
-			const totalSize = files.reduce((sum, file) => sum + file.size, 0);
 			showProgress();
 			
-			const { volumes, originalSize, compressedSize, archiveHash, fileCount, fileManifest } = await compressFilesToArchive(files);
+			const fileId = generateFileId();
+			const { volumes, originalSize, compressedSize, archiveHash, fileCount, fileManifest } = await compressFilesToArchive(files, volumeSize);
 			const volumeError = validateVolumeCount(volumes);
 			if (volumeError) {
 				reportFileSendLimit(volumeError);
@@ -532,13 +680,14 @@ async function handleFilesUpload(files, onSend) {
 				archiveHash,
 				fileCount,
 				fileManifest,
-				isArchive: true
+				isArchive: true,
+				compression: 'deflate'
 			};
 			
 			window.fileTransfers.set(fileId, fileTransfer);
 			
 			// Send archive start message
-			onSend({
+			await onSend({
 				type: 'file_start',
 				fileId,
 				fileName: `${files.length} files`,
@@ -548,7 +697,8 @@ async function handleFilesUpload(files, onSend) {
 				archiveHash,
 				fileCount,
 				fileManifest,
-				isArchive: true
+				isArchive: true,
+				compression: 'deflate'
 			});
 			
 			// Send volumes
@@ -558,7 +708,7 @@ async function handleFilesUpload(files, onSend) {
 	} catch (error) {
 		console.error('File compression error:', error);
 		if (window.addSystemMsg) {
-			window.addSystemMsg(`Failed to compress files: ${error.message}`);
+			window.addSystemMsg(`${t('system.file_send_failed', 'Failed to send files:')} ${error.message}`);
 		}
 	}
 }
@@ -581,6 +731,7 @@ async function sendVolumes(fileId, volumes, onSend, updateProgress, fileName) {
 			});
 			
 			fileTransfer.status = 'completed';
+			scheduleCompletedTransferCleanup(fileId);
 			updateFileProgress(fileId);
 			updateProgress(`✓ Sent ${fileName} successfully`);
 			return;
@@ -610,7 +761,7 @@ async function sendVolumes(fileId, volumes, onSend, updateProgress, fileName) {
 		currentVolume = batchEnd;
 		
 		// 继续发送下一批，使用较短的延迟
-		await new Promise(resolve => setTimeout(resolve, 100));
+		await yieldToBrowser();
 		await sendNextBatch();
 	}
 	
@@ -696,13 +847,14 @@ function updateFileProgress(fileId) {
 
 // Handle incoming file messages
 // 处理接收到的文件消息
-export function handleFileMessage(message, isPrivate = false) {
+export function handleFileMessage(message, isPrivate = false, options = {}) {
 	if (!message || typeof message !== 'object' || typeof message.type !== 'string') return;
-	const { type, fileId, userName } = message;
+	const { type } = message;
+	const renderMessage = options.renderMessage !== false;
 	
 	switch (type) {
 		case 'file_start':
-			handleFileStart(message, isPrivate);
+			handleFileStart(message, isPrivate, renderMessage);
 			break;
 		case 'file_volume':
 			handleFileVolume(message);
@@ -715,8 +867,8 @@ export function handleFileMessage(message, isPrivate = false) {
 
 // Handle file start message
 // 处理文件开始消息
-function handleFileStart(message, isPrivate) {
-	const { fileId, fileName, originalSize, compressedSize, totalVolumes, originalHash, archiveHash, fileCount, fileManifest, isArchive, userName } = message;
+function handleFileStart(message, isPrivate, renderMessage = true) {
+	const { fileId, fileName, originalSize, compressedSize, totalVolumes, originalHash, archiveHash, fileCount, fileManifest, isArchive, userName, compression = 'deflate' } = message;
 	if (!isValidFileStartMessage(message)) {
 		return
 	}
@@ -732,6 +884,7 @@ function handleFileStart(message, isPrivate) {
 		status: 'receiving',
 		originalHash,
 		archiveHash,
+		compression,
 		fileCount,
 		fileManifest,
 		isArchive,
@@ -741,7 +894,7 @@ function handleFileStart(message, isPrivate) {
 	window.fileTransfers.set(fileId, fileTransfer);
 	
 	// 添加文件消息到聊天
-	if (window.addOtherMsg) {
+	if (renderMessage && window.addOtherMsg) {
 		let displayData;
 		if (isArchive) {
 			displayData = {
@@ -779,6 +932,7 @@ function handleFileVolume(message) {
 	
 	transfer.receivedVolumes.add(volumeIndex);
 	transfer.volumeData[volumeIndex] = volumeData;
+	completeFileTransferIfReady(transfer);
 	
 	updateFileProgress(fileId);
 }
@@ -793,9 +947,14 @@ function handleFileComplete(message) {
 	if (!transfer) return;
 	
 	// 检查是否所有分卷都已接收
-	if (transfer.receivedVolumes.size === transfer.totalVolumes) {
+	completeFileTransferIfReady(transfer);
+	updateFileProgress(fileId);
+}
+
+function completeFileTransferIfReady(transfer) {
+	if (transfer && transfer.receivedVolumes.size === transfer.totalVolumes) {
 		transfer.status = 'completed';
-		updateFileProgress(fileId);
+		scheduleCompletedTransferCleanup(transfer.fileId)
 	}
 }
 
@@ -803,18 +962,35 @@ function handleFileComplete(message) {
 // 从分卷下载文件
 export async function downloadFile(fileId) {
 	const transfer = window.fileTransfers.get(fileId);
-	if (!transfer || transfer.status !== 'completed') return;
+	if (!transfer) {
+		if (window.addSystemMsg) {
+			window.addSystemMsg(t('system.file_unavailable', 'File data is not available. Ask the sender to resend it.'));
+		}
+		return
+	}
+	if (transfer.status !== 'completed') {
+		if (window.addSystemMsg) {
+			window.addSystemMsg(t('system.file_not_ready', 'File is still being received. Please try again later.'));
+		}
+		return
+	}
 	
 	try {
 		if (transfer.isArchive) {
 			// Download archive as multiple files
 			await decompressArchiveToFiles(transfer.volumeData, transfer.fileManifest, transfer.archiveHash);
 			// 删除系统提示
+		} else if (transfer.compression === 'none') {
+			await downloadRawVolumesToFile(transfer.volumeData, transfer.fileName, transfer.originalHash);
 		} else {
 			// Download single file
 			await decompressVolumesToFile(transfer.volumeData, transfer.fileName, transfer.originalHash);
 			// 删除系统提示
 		}
+		if (transfer.cleanupTimer) {
+			clearTimeout(transfer.cleanupTimer);
+		}
+		window.fileTransfers.delete(fileId);
 	} catch (error) {
 		console.error('Download error:', error);
 		window.addSystemMsg(`Failed to download: ${error.message}`);

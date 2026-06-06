@@ -175,11 +175,16 @@ window.addEventListener('DOMContentLoaded', () => {
 			// Pressing Enter (without Shift) sends the message
 			if (e.key === 'Enter' && !e.shiftKey) {
 				e.preventDefault();
-				sendMessage();
+				sendMessage().catch(handleMessageSendError);
 			}
 		});
 	}
 	
+	function handleMessageSendError(error) {
+		console.error('Message send error:', error);
+		addSystemMsg(`${t('system.message_send_failed', 'Message send failed. Please try again.')} ${error.message || ''}`.trim());
+	}
+
 	// 发送消息的统一函数
 	// Unified function to send messages
 	async function sendMessage() {
@@ -190,6 +195,7 @@ window.addEventListener('DOMContentLoaded', () => {
 		const rd = roomsData[activeRoomIndex]; // 当前房间数据 / Current room data
 		
 		if (rd && rd.chat) {
+			let sendSucceeded = false;
 			if (images.length > 0) {
 				// 发送包含图片的消息 (支持多图和文字合并)
 				// Send message with images (supports multiple images and text combined)
@@ -214,16 +220,31 @@ window.addEventListener('DOMContentLoaded', () => {
 							p: encryptedClientMessage,
 							c: rd.privateChatTargetId
 						};
-						const encryptedMessageForServer = rd.chat.encryptServerMessage(serverRelayPayload, rd.chat.serverShared);						rd.chat.sendMessage(encryptedMessageForServer);
+						const encryptedMessageForServer = rd.chat.encryptServerMessage(serverRelayPayload, rd.chat.serverShared);
+						if (typeof rd.chat.waitForWritable === 'function' && !(await rd.chat.waitForWritable())) {
+							addSystemMsg(t('system.message_send_failed', 'Message send failed. Please try again.'));
+							return
+						}
+						if (!rd.chat.sendMessage(encryptedMessageForServer)) {
+							addSystemMsg(t('system.message_send_failed', 'Message send failed. Please try again.'));
+							return
+						}
 						addMsg(messageContent, false, 'image_private');
+						sendSucceeded = true;
 					} else {
 						addSystemMsg(`${t('system.private_message_failed', 'Cannot send private message to')} ${rd.privateChatTargetName}. ${t('system.user_not_connected', 'User might not be fully connected.')}`)
+						return
 					}
 				} else {
 					// 公共频道图片消息发送
 					// Send image message to public channel
-					rd.chat.sendChannelMessage('image', messageContent);
+					const sent = await rd.chat.sendChannelMessage('image', messageContent);
+					if (!sent) {
+						addSystemMsg(t('system.message_send_failed', 'Message send failed. Please try again.'));
+						return
+					}
 					addMsg(messageContent, false, 'image');
+					sendSucceeded = true;
 				}
 				
 				imagePasteHandler.clearImages(); // 清除所有图片预览
@@ -247,16 +268,34 @@ window.addEventListener('DOMContentLoaded', () => {
 							c: rd.privateChatTargetId
 						};
 						const encryptedMessageForServer = rd.chat.encryptServerMessage(serverRelayPayload, rd.chat.serverShared);
-						rd.chat.sendMessage(encryptedMessageForServer);					addMsg(text, false, 'text_private');
+						if (typeof rd.chat.waitForWritable === 'function' && !(await rd.chat.waitForWritable())) {
+							addSystemMsg(t('system.message_send_failed', 'Message send failed. Please try again.'));
+							return
+						}
+						if (!rd.chat.sendMessage(encryptedMessageForServer)) {
+							addSystemMsg(t('system.message_send_failed', 'Message send failed. Please try again.'));
+							return
+						}
+						addMsg(text, false, 'text_private');
+						sendSucceeded = true;
 					} else {
 						addSystemMsg(`${t('system.private_message_failed', 'Cannot send private message to')} ${rd.privateChatTargetName}. ${t('system.user_not_connected', 'User might not be fully connected.')}`)
+						return
 					}
 				} else {
 					// 公共频道消息发送
 					// Send public message
-					rd.chat.sendChannelMessage('text', text);
-					addMsg(text);				}
+					const sent = await rd.chat.sendChannelMessage('text', text);
+					if (!sent) {
+						addSystemMsg(t('system.message_send_failed', 'Message send failed. Please try again.'));
+						return
+					}
+					addMsg(text);
+					sendSucceeded = true;
+				}
 			}
+
+			if (!sendSucceeded) return;
 			
 			// 清空输入框并触发 input 事件
 			// Clear input and trigger input event
@@ -272,7 +311,7 @@ window.addEventListener('DOMContentLoaded', () => {
 	// Add click event for send button
 	const sendButton = document.querySelector('.send-message-btn');
 	if (sendButton) {
-		sendButton.addEventListener('click', sendMessage);
+		sendButton.addEventListener('click', () => sendMessage().catch(handleMessageSendError));
 	}
 	
 	// 设置发送文件功能
@@ -284,6 +323,11 @@ window.addEventListener('DOMContentLoaded', () => {
 		getCurrentUserName: () => {
 			const rd = roomsData[activeRoomIndex];
 			return rd ? (rd.myUserName || '') : ''
+		},
+		getRecipientCount: () => {
+			const rd = roomsData[activeRoomIndex];
+			if (!rd || !rd.chat || rd.privateChatTargetId) return 1;
+			return Object.values(rd.chat.channel || {}).filter(client => client && client.shared && client.username).length || 1
 		},
 		onSend: async (message) => {
 			const rd = roomsData[activeRoomIndex];
@@ -307,25 +351,37 @@ window.addEventListener('DOMContentLoaded', () => {
 							c: rd.privateChatTargetId
 						};
 						const encryptedMessageForServer = rd.chat.encryptServerMessage(serverRelayPayload, rd.chat.serverShared);
-						rd.chat.sendMessage(encryptedMessageForServer);
+						if (typeof rd.chat.waitForWritable === 'function' && !(await rd.chat.waitForWritable())) {
+							throw new Error(t('system.file_send_failed', 'Failed to send files:'));
+						}
+						if (!rd.chat.sendMessage(encryptedMessageForServer)) {
+							throw new Error(t('system.file_send_failed', 'Failed to send files:'));
+						}
 						
 						// 添加到自己的聊天记录
 						if (msgWithUser.type === 'file_start') {
 							addMsg(msgWithUser, false, 'file_private');
-						}					} else {
-						addSystemMsg(`${t('system.private_file_failed', 'Cannot send private file to')} ${rd.privateChatTargetName}. ${t('system.user_not_connected', 'User might not be fully connected.')}`)
+						}
+					} else {
+						throw new Error(`${t('system.private_file_failed', 'Cannot send private file to')} ${rd.privateChatTargetName}. ${t('system.user_not_connected', 'User might not be fully connected.')}`)
 					}
 				} else {
 					// 公共频道文件发送
 					// Send file to public channel
-					rd.chat.sendChannelMessage(msgWithUser.type, msgWithUser);
+					const sent = await rd.chat.sendChannelMessage(msgWithUser.type, msgWithUser);
+					if (!sent) {
+						throw new Error(t('system.file_send_failed', 'Failed to send files:'));
+					}
 					
 					// 添加到自己的聊天记录
 					if (msgWithUser.type === 'file_start') {
 						addMsg(msgWithUser, false, 'file');
 					}
 				}
-			}		}
+			} else {
+				throw new Error(t('system.node_not_ready', 'Node connection is not ready.'));
+			}
+		}
 	});
 
 
@@ -380,13 +436,27 @@ window.addEventListener('languageChange', (event) => {
 let dragCounter = 0;
 let hasTriggeredAttach = false;
 
+function eventHasDraggedFiles(e) {
+	const items = Array.from(e.dataTransfer?.items || []);
+	const types = Array.from(e.dataTransfer?.types || []);
+	return items.some(item => item.kind === 'file') || types.includes('Files')
+}
+
+function canOpenFileUpload() {
+	const rd = roomsData[activeRoomIndex];
+	return Boolean(rd && rd.chat && !document.body.classList.contains('login-page'))
+}
+
 // 监听文件上传模态框关闭事件，重置拖拽标志位
 window.addEventListener('fileUploadModalClosed', () => {
 	hasTriggeredAttach = false;
 });
 
 document.addEventListener('dragenter', (e) => {
+	if (!eventHasDraggedFiles(e)) return;
+	e.preventDefault();
 	dragCounter++;
+	if (!canOpenFileUpload()) return;
 	if (!hasTriggeredAttach && e.dataTransfer.items.length > 0) {
 		// 检查是否有文件
 		for (let item of e.dataTransfer.items) {
@@ -404,6 +474,7 @@ document.addEventListener('dragenter', (e) => {
 });
 
 document.addEventListener('dragleave', (e) => {
+	if (!eventHasDraggedFiles(e)) return;
 	dragCounter--;
 	if (dragCounter === 0) {
 		hasTriggeredAttach = false;
@@ -411,11 +482,15 @@ document.addEventListener('dragleave', (e) => {
 });
 
 document.addEventListener('dragover', (e) => {
-	e.preventDefault();
+	if (eventHasDraggedFiles(e)) {
+		e.preventDefault();
+	}
 });
 
 document.addEventListener('drop', (e) => {
-	e.preventDefault();
+	if (eventHasDraggedFiles(e)) {
+		e.preventDefault();
+	}
 	dragCounter = 0;
 	hasTriggeredAttach = false;
 });

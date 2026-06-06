@@ -7,7 +7,7 @@ export default defineConfig({
 	root: 'client',
 	// Base URL
 	// 基础 URL
-	base: './',
+	base: '/',
 	// Plugins
 	// 插件
 	plugins: [],

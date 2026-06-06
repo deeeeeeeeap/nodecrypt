@@ -20,6 +20,13 @@ let fileIdCounter = 0;
 let onSendCallback = null;
 let documentDragGuardsInstalled = false;
 
+function handleBrowseClick() {
+	const fileInput = $('#file-upload-input', uploadModal);
+	if (fileInput) {
+		fileInput.click()
+	}
+}
+
 function preventDocumentDragWhenModalOpen(e) {
 	if (uploadModal || Array.from(e.dataTransfer?.types || []).includes('Files')) {
 		e.preventDefault()
@@ -206,7 +213,7 @@ function setupModalEvents() {
 	on(cancelBtn, 'click', hideUploadModal);
 
 	// Browse files
-	on(browseBtn, 'click', () => fileInput.click());
+	on(browseBtn, 'click', handleBrowseClick);
 	on(fileInput, 'change', handleFileInputChange);
 
 	// Drag and drop
@@ -351,8 +358,17 @@ async function handleSendFiles() {
 	if (selectedFiles.size === 0 || !onSendCallback) return;
 
 	const files = Array.from(selectedFiles.values());
+	const sendBtn = $('.file-upload-send-btn', uploadModal);
 	
 	try {
+		if (sendBtn) {
+			sendBtn.disabled = true;
+			sendBtn.textContent = t('file.preparing', 'Preparing...');
+		}
+		if (window.addSystemMsg) {
+			window.addSystemMsg(t('system.file_prepare', 'Preparing file transfer...'));
+		}
+
 		// Close modal first
 		hideUploadModal();
 		

@@ -30,22 +30,31 @@ function isLocalHostname(hostname) {
 }
 
 function getRequestScheme(request, url) {
-  const forwardedProto = request.headers.get('x-forwarded-proto');
-  if (forwardedProto) {
-    return forwardedProto.split(',')[0].trim().toLowerCase();
-  }
-
   const cfVisitor = request.headers.get('cf-visitor');
   if (cfVisitor) {
     try {
       const parsed = JSON.parse(cfVisitor);
-      if (parsed && typeof parsed.scheme === 'string') {
-        return parsed.scheme.toLowerCase();
+      const scheme = parsed && typeof parsed.scheme === 'string' ? parsed.scheme.toLowerCase() : '';
+      if (scheme === 'http' || scheme === 'https') {
+        return scheme;
       }
     } catch {}
   }
 
-  return url.protocol.replace(':', '').toLowerCase();
+  const urlScheme = url.protocol.replace(':', '').toLowerCase();
+  if (urlScheme === 'http' || urlScheme === 'https') {
+    return urlScheme;
+  }
+
+  const forwardedProto = request.headers.get('x-forwarded-proto');
+  if (forwardedProto) {
+    const scheme = forwardedProto.split(',')[0].trim().toLowerCase();
+    if (scheme === 'http' || scheme === 'https') {
+      return scheme;
+    }
+  }
+
+  return urlScheme;
 }
 
 function shouldRedirectToHttps(request, url) {
@@ -63,9 +72,10 @@ function withResponseHeaders(response, url) {
     headers.set(name, value);
   }
 
+  const contentType = (headers.get('Content-Type') || '').toLowerCase();
   if (url.pathname.startsWith('/assets/')) {
     headers.set('Cache-Control', 'public, max-age=31536000, immutable');
-  } else if (url.pathname === '/' || url.pathname.endsWith('.html')) {
+  } else if (contentType.includes('text/html') || url.pathname === '/' || url.pathname.endsWith('.html')) {
     headers.set('Cache-Control', 'no-cache');
   }
 
@@ -92,7 +102,7 @@ export default {
 
     if (shouldRedirectToHttps(request, url)) {
       url.protocol = 'https:';
-      return Response.redirect(url.toString(), 301);
+      return Response.redirect(url.toString(), 308);
     }
 
     // 处理WebSocket请求

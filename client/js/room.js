@@ -366,14 +366,15 @@ export function handleClientMessage(idx, msg) {
 			}
 		}
 
+		const isActiveRoom = activeRoomIndex === idx;
+		if (window.handleFileMessage) {
+			window.handleFileMessage(msg.data, msgType.includes('_private'), {
+				renderMessage: isActiveRoom
+			});
+		}
+
 		// Part 2: Handle UI interaction (rendering in active room, or unread count in inactive room)
-		if (activeRoomIndex === idx) {
-			// If it's the active room, delegate to util.file.js to handle UI and file transfer state.
-			// This applies to all file-related messages (file_start, file_volume, file_end, etc.)
-			if (window.handleFileMessage) {
-				window.handleFileMessage(msg.data, msgType.includes('_private'));
-			}
-		} else {
+		if (!isActiveRoom) {
 			// If it's not the active room, only increment unread count for 'file_start' messages.
 			if (msgType === 'file_start' || msgType === 'file_start_private') {
 				newRd.unreadCount = (newRd.unreadCount || 0) + 1;

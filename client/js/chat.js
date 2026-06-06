@@ -423,7 +423,8 @@ function renderFileMessage(fileData, isSender) {
 		downloadBtnStyle = 'display: none;';
 	} else {
 		// 接收方历史消息，直接显示下载按钮（带动画效果）
-		downloadBtnStyle = 'display: flex;';
+		statusText = t('system.file_unavailable', 'File data is not available. Ask the sender to resend it.');
+		showProgress = true;
 	}
 	// Different icon for archives vs single files
 	const fileIcon = isArchive ? '📦' : '📄';

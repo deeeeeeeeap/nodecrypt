@@ -559,6 +559,17 @@ class NodeCrypt {
 		return (false)
 	}
 
+	async waitForWritable(maxBufferedBytes = 4 * 1024 * 1024, timeoutMs = 30000) {
+		const started = Date.now();
+		while (this.isOpen() && this.connection.bufferedAmount > maxBufferedBytes) {
+			if (Date.now() - started > timeoutMs) {
+				return false
+			}
+			await new Promise(resolve => setTimeout(resolve, 50))
+		}
+		return this.isOpen()
+	}
+
 	// Send a message to all channels
 	// 向所有频道发送消息
 	async sendChannelMessage(type, data) {
@@ -583,6 +594,9 @@ class NodeCrypt {
 						p: payloads,
 					}, this.serverShared);
 					if (!this.isOpen() || payload.length === 0 || payload.length > (8 * 1024 * 1024)) {
+						return (false)
+					}
+					if (!(await this.waitForWritable())) {
 						return (false)
 					}
 					this.connection.send(payload)

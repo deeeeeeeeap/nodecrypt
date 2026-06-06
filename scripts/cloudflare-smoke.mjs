@@ -13,6 +13,8 @@ const message = `history-smoke-${Date.now()}`;
 const liveMessage = `live-smoke-${Date.now()}`;
 const fileName = `nodecrypt-smoke-${Date.now()}.txt`;
 const filePath = join(tmpdir(), fileName);
+const largeFileName = `nodecrypt-large-${Date.now()}.bin`;
+const largeFilePath = join(tmpdir(), largeFileName);
 
 function findChromeExecutable() {
 	const candidates = [
@@ -130,6 +132,30 @@ async function sendFile(page) {
 	}
 }
 
+async function sendLargeFile(page) {
+	writeFileSync(largeFilePath, Buffer.alloc(9 * 1024 * 1024, 65));
+	await page.locator('.chat-attach-btn').click();
+	await page.setInputFiles('#file-upload-input', largeFilePath);
+	await page.locator('.file-upload-send-btn').click();
+	if (!(await waitForChatText(page, largeFileName, 15000))) {
+		throw new Error(`Sent large file did not render: ${largeFileName}`);
+	}
+}
+
+async function waitForFileTransferCompleted(page, expectedName, timeoutMs = 45000) {
+	try {
+		await page.waitForFunction((fileNameToFind) => {
+			const transfers = window.fileTransfers && typeof window.fileTransfers.values === 'function' ?
+				Array.from(window.fileTransfers.values()) :
+				[];
+			return transfers.some(transfer => transfer.fileName === fileNameToFind && transfer.status === 'completed');
+		}, expectedName, { timeout: timeoutMs });
+		return true
+	} catch {
+		return false
+	}
+}
+
 async function runSmoke() {
 	let wrangler = null;
 	let browser = null;
@@ -156,6 +182,11 @@ async function runSmoke() {
 		const bob = await bobContext.newPage();
 		await joinRoom(bob, 'bob');
 		await waitForChatText(bob, message, 15000);
+		await sendFile(alice);
+		const bobHasLiveFile = await waitForChatText(bob, fileName, 15000);
+		await sendLargeFile(alice);
+		const bobHasLargeFile = await waitForChatText(bob, largeFileName, 15000);
+		const bobHasCompletedLargeFile = await waitForFileTransferCompleted(bob, largeFileName);
 
 		const bobText = await chatText(bob);
 		const bobHasHistory = bobText.includes(message) && bobText.includes('alice');
@@ -185,12 +216,15 @@ async function runSmoke() {
 		await charlieContext.close();
 
 		const result = {
-			ok: bobHasHistory && bobHasLoadedNotice && bobHasLiveMessage && eveIsIsolated && !charlieHasOldMessage,
+			ok: bobHasHistory && bobHasLoadedNotice && bobHasLiveFile && bobHasLargeFile && bobHasCompletedLargeFile && bobHasLiveMessage && eveIsIsolated && !charlieHasOldMessage,
 			roomName,
 			message,
 			liveMessage,
 			bobHasHistory,
 			bobHasLoadedNotice,
+			bobHasLiveFile,
+			bobHasLargeFile,
+			bobHasCompletedLargeFile,
 			bobHasLiveMessage,
 			eveIsIsolated,
 			charlieHasOldMessage,
@@ -205,6 +239,11 @@ async function runSmoke() {
 		}
 		try {
 			rmSync(filePath);
+		} catch {
+			// Ignore temp-file cleanup failures.
+		}
+		try {
+			rmSync(largeFilePath);
 		} catch {
 			// Ignore temp-file cleanup failures.
 		}
