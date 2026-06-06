@@ -329,6 +329,14 @@ window.addEventListener('DOMContentLoaded', () => {
 			if (!rd || !rd.chat || rd.privateChatTargetId) return 1;
 			return Object.values(rd.chat.channel || {}).filter(client => client && client.shared && client.username).length || 1
 		},
+		getTransferContext: () => {
+			const rd = roomsData[activeRoomIndex];
+			return {
+				roomIndex: activeRoomIndex,
+				scope: rd && rd.privateChatTargetId ? 'private' : 'public',
+				targetClientId: rd ? rd.privateChatTargetId : null
+			}
+		},
 		onSend: async (message) => {
 			const rd = roomsData[activeRoomIndex];
 			if (rd && rd.chat) {

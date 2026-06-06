@@ -178,12 +178,14 @@ export function showFileUploadModal(onSend) {
 // 隐藏文件上传模态框
 function hideUploadModal() {
 	if (!uploadModal) return;
+	const modalToHide = uploadModal;
 	
-	removeClass(uploadModal, 'show');
+	removeClass(modalToHide, 'show');
 	setTimeout(() => {
-		if (uploadModal && uploadModal.parentNode) {
-			document.body.removeChild(uploadModal);
+		if (modalToHide.parentNode) {
+			document.body.removeChild(modalToHide);
 		}
+		if (uploadModal !== modalToHide) return;
 		uploadModal = null;
 		selectedFiles.clear();
 		onSendCallback = null;

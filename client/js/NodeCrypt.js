@@ -93,6 +93,7 @@ class NodeCrypt {
 		this.stopPing = this.stopPing.bind(this);
 		this.disconnect = this.disconnect.bind(this);
 		this.sendMessage = this.sendMessage.bind(this);
+		this.sendClientMessage = this.sendClientMessage.bind(this);
 		this.sendChannelMessage = this.sendChannelMessage.bind(this);
 		this.storeHistoryMessage = this.storeHistoryMessage.bind(this);
 		this.encryptHistoryMessage = this.encryptHistoryMessage.bind(this);
@@ -568,6 +569,41 @@ class NodeCrypt {
 			await new Promise(resolve => setTimeout(resolve, 50))
 		}
 		return this.isOpen()
+	}
+
+	async sendClientMessage(clientId, type, data) {
+		if (!this.serverShared || !this.isString(clientId) || !this.isString(type)) {
+			return false
+		}
+		const targetClient = this.channel[clientId];
+		if (!targetClient || !targetClient.shared) {
+			return false
+		}
+		try {
+			const encryptedClientMessage = await this.encryptClientMessage({
+				a: 'm',
+				t: type,
+				d: data
+			}, targetClient.shared);
+			if (encryptedClientMessage.length === 0) {
+				return false
+			}
+			const payload = this.encryptServerMessage({
+				a: 'c',
+				p: encryptedClientMessage,
+				c: clientId
+			}, this.serverShared);
+			if (!this.isOpen() || payload.length === 0 || payload.length > (8 * 1024 * 1024)) {
+				return false
+			}
+			if (!(await this.waitForWritable())) {
+				return false
+			}
+			return this.sendMessage(payload)
+		} catch (error) {
+			this.logEvent('sendClientMessage', error, 'error')
+		}
+		return false
 	}
 
 	// Send a message to all channels

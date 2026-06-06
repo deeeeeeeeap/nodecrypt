@@ -334,12 +334,13 @@ export function handleClientMessage(idx, msg) {
 
 	// Handle file messages
 	if (msgType.startsWith('file_')) {
+		let realUserName = msg.userName;
+		if (!realUserName && msg.clientId && newRd.userMap[msg.clientId]) {
+			realUserName = newRd.userMap[msg.clientId].userName || newRd.userMap[msg.clientId].username || newRd.userMap[msg.clientId].name;
+		}
+
 		// Part 1: Update message history and send notifications (for 'file_start' type)
 		if (msgType === 'file_start' || msgType === 'file_start_private') {
-			let realUserName = msg.userName;
-			if (!realUserName && msg.clientId && newRd.userMap[msg.clientId]) {
-				realUserName = newRd.userMap[msg.clientId].userName || newRd.userMap[msg.clientId].username || newRd.userMap[msg.clientId].name;
-			}
 			const historyMsgType = msgType === 'file_start_private' ? 'file_private' : 'file';
 			
 			const fileId = msg.data && msg.data.fileId;
@@ -369,7 +370,16 @@ export function handleClientMessage(idx, msg) {
 		const isActiveRoom = activeRoomIndex === idx;
 		if (window.handleFileMessage) {
 			window.handleFileMessage(msg.data, msgType.includes('_private'), {
-				renderMessage: isActiveRoom
+				renderMessage: isActiveRoom,
+				roomIndex: idx,
+				senderClientId: msg.clientId,
+				senderUserName: realUserName,
+				sendClientMessage: (targetClientId, type, data) => {
+					if (!newRd.chat || typeof newRd.chat.sendClientMessage !== 'function') {
+						return false
+					}
+					return newRd.chat.sendClientMessage(targetClientId, type, data)
+				}
 			});
 		}
 
