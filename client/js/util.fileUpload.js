@@ -18,6 +18,20 @@ let uploadModal = null;
 let selectedFiles = new Map();
 let fileIdCounter = 0;
 let onSendCallback = null;
+let documentDragGuardsInstalled = false;
+
+function preventDocumentDragWhenModalOpen(e) {
+	if (uploadModal || Array.from(e.dataTransfer?.types || []).includes('Files')) {
+		e.preventDefault()
+	}
+}
+
+function ensureDocumentDragGuards() {
+	if (documentDragGuardsInstalled) return;
+	on(document, 'dragover', preventDocumentDragWhenModalOpen);
+	on(document, 'drop', preventDocumentDragWhenModalOpen);
+	documentDragGuardsInstalled = true
+}
 
 // Listen for language changes to update modal text
 // 监听语言变更以更新模态框文本
@@ -206,9 +220,7 @@ function setupModalEvents() {
 	// Send files
 	on(sendBtn, 'click', handleSendFiles);
 
-	// Prevent default drag behaviors on document
-	on(document, 'dragover', (e) => e.preventDefault());
-	on(document, 'drop', (e) => e.preventDefault());
+	ensureDocumentDragGuards();
 }
 
 // Handle file input change

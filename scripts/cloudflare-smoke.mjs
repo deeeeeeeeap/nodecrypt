@@ -118,18 +118,19 @@ async function sendText(page, text) {
 
 async function runSmoke() {
 	let wrangler = null;
-	if (shouldStartWrangler) {
-		wrangler = startWrangler();
-		await waitForServer(baseUrl);
-	}
-
-	const executablePath = findChromeExecutable();
-	const browser = await chromium.launch({
-		headless: true,
-		...(executablePath ? { executablePath } : {}),
-	});
-
+	let browser = null;
 	try {
+		if (shouldStartWrangler) {
+			wrangler = startWrangler();
+			await waitForServer(baseUrl);
+		}
+
+		const executablePath = findChromeExecutable();
+		browser = await chromium.launch({
+			headless: true,
+			...(executablePath ? { executablePath } : {}),
+		});
+
 		const aliceContext = await newEnglishContext(browser);
 		const alice = await aliceContext.newPage();
 		await joinRoom(alice, 'alice');
@@ -184,7 +185,9 @@ async function runSmoke() {
 			throw new Error('Cloudflare smoke test failed');
 		}
 	} finally {
-		await browser.close();
+		if (browser) {
+			await browser.close();
+		}
 		stopProcessTree(wrangler);
 	}
 }

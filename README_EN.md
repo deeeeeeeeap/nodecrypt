@@ -20,6 +20,8 @@ Click the button below for one-click deployment to Cloudflare Workers:
 This fork is optimized for Cloudflare Workers. A Docker image is not published for this repository; use the Worker deployment path above for production.
 
 ### Method 4: Local Development Deployment
+Requirements: Node.js >= 22, npm, Cloudflare Wrangler, and Chrome / Edge or `CHROME_PATH` for `npm run smoke:cloudflare`.
+
 After cloning the project and installing dependencies, use `npm run dev` to start the development server.
 Use `npm run deploy` to deploy to Cloudflare Workers.
 

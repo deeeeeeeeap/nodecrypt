@@ -85,24 +85,31 @@ export function setupImagePaste(inputSelector) {
 	if (!input) return;
 
 	let currentImageDatas = []; // 支持多张图片
+	let placeholderFrame = null;
 	const imagePreviewContainer = createElement('div', { class: 'image-preview-container' });
 	input.parentNode.insertBefore(imagePreviewContainer, input);
 
 	// Function to update placeholder visibility
 	function updatePlaceholderVisibility() {
-		const placeholder = input.parentNode.querySelector('.input-field-placeholder');
-		if (!placeholder) return;
-
-		const hasText = input.innerText.trim().length > 0;
-		const hasImages = currentImageDatas.length > 0;
-
-		if (hasText || hasImages) {
-			placeholder.style.opacity = '0';
-			input.classList.remove('is-empty'); // 确保移除 is-empty
-		} else {
-			placeholder.style.opacity = '1';
-			input.classList.add('is-empty'); // 确保添加 is-empty
+		if (placeholderFrame) {
+			cancelAnimationFrame(placeholderFrame)
 		}
+		placeholderFrame = requestAnimationFrame(() => {
+			placeholderFrame = null;
+			const placeholder = input.parentNode.querySelector('.input-field-placeholder');
+			if (!placeholder) return;
+
+			const hasText = input.innerText.trim().length > 0;
+			const hasImages = currentImageDatas.length > 0;
+
+			if (hasText || hasImages) {
+				placeholder.style.opacity = '0';
+				input.classList.remove('is-empty'); // 确保移除 is-empty
+			} else {
+				placeholder.style.opacity = '1';
+				input.classList.add('is-empty'); // 确保添加 is-empty
+			}
+		})
 	}
 
 	// Initial check for placeholder

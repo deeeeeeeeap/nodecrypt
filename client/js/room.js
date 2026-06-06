@@ -177,10 +177,11 @@ export function joinRoom(userName, roomName, password, modal = null, onResult) {
 		onHistoryMessages: (messages) => handleHistoryMessages(idx, messages)
 	};
 	const chatInst = new window.NodeCrypt(window.config, callbacks);
-	chatInst.setCredentials(userName, roomName, password);
-	const connected = chatInst.connect();
 	roomsData[idx].chat = chatInst;
+	const hasCredentials = chatInst.setCredentials(userName, roomName, password);
+	const connected = hasCredentials && chatInst.connect();
 	if (!connected && onResult && !closed) {
+		removePendingRoom(newRd);
 		closed = true;
 		onResult(false)
 	}

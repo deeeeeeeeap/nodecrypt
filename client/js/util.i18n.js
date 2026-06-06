@@ -10,8 +10,8 @@ const LANGUAGES = {
 		flag: '🇺🇸',
 		translations: {
 			// Meta tags for SEO
-			'meta.description': 'NodeCrypt - True end-to-end encrypted chat system, no plaintext message database, all messages encrypted locally, server only relays encrypted data, supports Cloudflare Workers, Docker, self-hosting and local development.',
-			'meta.keywords': 'end-to-end encryption, security, chat, WebSocket, Cloudflare Workers, JavaScript, E2EE, anonymous communication, AES-GCM, ECDH, RSA, security, open source, NodeCrypt, shuaiplus',
+			'meta.description': 'NodeCrypt - End-to-end encrypted temporary node group chat for Cloudflare Workers and Durable Objects. The relay handles ciphertext only.',
+			'meta.keywords': 'end-to-end encryption, secure chat, WebSocket, Cloudflare Workers, Durable Objects, JavaScript, E2EE, AES-GCM, ECDH, RSA, NodeCrypt',
 			'meta.og_title': 'NodeCrypt - End-to-End Encrypted Chat System',
 			'meta.og_description': 'NodeCrypt is a zero-knowledge, end-to-end encrypted open source chat system where all encryption and decryption is done locally on the client side, and servers cannot access plaintext. Supports multi-platform deployment, secure, anonymous, and temporary encrypted room history.',
 			'meta.twitter_title': 'NodeCrypt - End-to-End Encrypted Chat System',
@@ -140,8 +140,8 @@ const LANGUAGES = {
 		flag: '🇨🇳',
 		translations: {
 			// Meta tags for SEO
-			'meta.description': 'NodeCrypt - 真正的端到端加密聊天系统，无明文消息数据库，所有消息本地加密，服务器仅做加密数据中转，支持 Cloudflare Workers、Docker、自托管和本地开发。',
-			'meta.keywords': '端到端加密, 安全, 聊天, WebSocket, Cloudflare Workers, JavaScript, E2EE, 匿名通信, AES-GCM, ECDH, RSA, 安全, 开源, NodeCrypt, shuaiplus',
+			'meta.description': 'NodeCrypt - 面向 Cloudflare Workers 和 Durable Objects 的端到端加密临时节点群聊，中继端只处理密文。',
+			'meta.keywords': '端到端加密, 安全聊天, WebSocket, Cloudflare Workers, Durable Objects, JavaScript, E2EE, AES-GCM, ECDH, RSA, NodeCrypt',
 			'meta.og_title': 'NodeCrypt - 端到端加密聊天系统',
 			'meta.og_description': 'NodeCrypt 是一个端到端加密的开源聊天系统，所有加密解密均在客户端本地完成，服务器无法获取明文。支持多平台部署，安全、匿名、临时加密房间历史。',
 			'meta.twitter_title': 'NodeCrypt - 端到端加密聊天系统',

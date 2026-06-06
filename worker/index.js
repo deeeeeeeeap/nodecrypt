@@ -6,6 +6,23 @@ const SEEN_TIMEOUT_MS = 60000;
 const HISTORY_MAX_MESSAGES = 100;
 const HISTORY_MAX_BYTES = 256 * 1024;
 const HISTORY_MAX_ENTRY_BYTES = 16 * 1024;
+const CLEANUP_INTERVAL_MS = 10000;
+const SECURITY_HEADERS = {
+  'Content-Security-Policy': [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob: https://image.757605.xyz",
+    "connect-src 'self' ws: wss: https://cdn.jsdelivr.net",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "frame-ancestors 'none'"
+  ].join('; '),
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'no-referrer',
+  'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=()'
+};
 
 function isLocalHostname(hostname) {
   return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
@@ -41,6 +58,9 @@ function withResponseHeaders(response, url) {
 
   const headers = new Headers(response.headers);
   headers.set('Strict-Transport-Security', 'max-age=31536000');
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
+    headers.set(name, value);
+  }
 
   if (url.pathname.startsWith('/assets/')) {
     headers.set('Cache-Control', 'public, max-age=31536000, immutable');
@@ -100,6 +120,7 @@ export class ChatRoom {  constructor(state, env) {
     this.clients = {};
     this.channels = {};
     this.historyBacklogs = {};
+    this.lastCleanup = 0;
     
     this.config = {
       seenTimeout: SEEN_TIMEOUT_MS,
@@ -191,7 +212,7 @@ export class ChatRoom {  constructor(state, env) {
   async handleSession(connection) {    connection.accept();
 
     // 清理旧连接
-    await this.cleanupOldConnections();
+    await this.cleanupOldConnections(true);
 
     const clientId = generateClientId();
 
@@ -227,6 +248,7 @@ export class ChatRoom {  constructor(state, env) {
       }
 
       this.clients[clientId].seen = getTime();
+      await this.cleanupOldConnections();
 
       if (message === 'ping') {
         this.sendMessage(connection, 'pong');
@@ -558,8 +580,14 @@ export class ChatRoom {  constructor(state, env) {
   }
   
   // 连接清理方法
-  async cleanupOldConnections() {
-    const seenThreshold = getTime() - this.config.seenTimeout;
+  async cleanupOldConnections(force = false) {
+    const now = getTime();
+    if (!force && now - this.lastCleanup < CLEANUP_INTERVAL_MS) {
+      return 0;
+    }
+    this.lastCleanup = now;
+
+    const seenThreshold = now - this.config.seenTimeout;
     const clientsToRemove = [];
 
     // 先收集需要移除的客户端，避免在迭代时修改对象

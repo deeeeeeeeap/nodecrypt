@@ -162,7 +162,7 @@ body.login-page {
 }
 
 /* Language switcher specific styles */
-/* 语言切换器专用样式 */npx browserify ChatCrypt.cjs -o ChatCrypt.js
+/* 语言切换器专用样式 */
 .language-current {
 	font-weight: 500;
 	color: #30a8f7;

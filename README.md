@@ -87,9 +87,10 @@ flowchart LR
 
 环境要求：
 
-- Node.js
+- Node.js >= 22
 - npm
 - Cloudflare Wrangler
+- Chrome / Edge，或为 `npm run smoke:cloudflare` 设置 `CHROME_PATH`
 
 安装依赖：
 

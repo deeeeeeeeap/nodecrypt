@@ -12,6 +12,37 @@ import {
 } from 'buffer';
 window.Buffer = Buffer;
 
+function getSafeLogMessage(source, message) {
+	if (message instanceof Error) {
+		return `${message.name}: ${message.message}`
+	}
+	if (typeof message === 'string') {
+		if (source === 'connect') {
+			try {
+				const url = new URL(message, window.location.href);
+				return `${url.protocol}//${url.host}`
+			} catch {
+				return '[websocket-url]'
+			}
+		}
+		if (message.length > 128 || message.includes('|') || message.startsWith('{')) {
+			return `[string length=${message.length}]`
+		}
+		return message
+	}
+	if (message && Object.prototype.toString.call(message) === '[object Object]') {
+		const summary = {};
+		if (typeof message.a === 'string') summary.action = message.a;
+		if (typeof message.t === 'string') summary.type = message.t;
+		if (typeof message.c === 'string') summary.clientId = message.c;
+		if (typeof message.p === 'string') summary.payload = `[string length=${message.p.length}]`;
+		else if (Array.isArray(message.p)) summary.payload = `[array length=${message.p.length}]`;
+		else if (message.p && typeof message.p === 'object') summary.payload = '[object]';
+		return Object.keys(summary).length ? summary : '[object]'
+	}
+	return message
+}
+
 // Main NodeCrypt class for secure communication
 // 用于安全通信的 NodeCrypt 主类
 class NodeCrypt {
@@ -441,7 +472,8 @@ class NodeCrypt {
 		if (this.config.debug) {
 			const date = new Date(),
 				dateString = date.getFullYear() + '-' + ('0' + (date.getMonth() + 1)).slice(-2) + '-' + ('0' + date.getDate()).slice(-2) + ' ' + ('0' + date.getHours()).slice(-2) + ':' + ('0' + date.getMinutes()).slice(-2) + ':' + ('0' + date.getSeconds()).slice(-2);
-			console.log('[' + dateString + ']', (level ? level.toUpperCase() : 'INFO'), source + (message ? ':' : ''), (message ? message : ''))
+			const safeMessage = getSafeLogMessage(source, message);
+			console.log('[' + dateString + ']', (level ? level.toUpperCase() : 'INFO'), source + (safeMessage ? ':' : ''), (safeMessage ? safeMessage : ''))
 		}
 	}
 
@@ -454,7 +486,7 @@ class NodeCrypt {
 	// Check if connection is closed
 	// 检查连接是否已关闭
 	isClosed() {
-		return (!this.connection || !this.connection.readyState || this.connection.readyState === WebSocket.CLOSED ? true : false)
+		return (!this.connection || this.connection.readyState === WebSocket.CLOSING || this.connection.readyState === WebSocket.CLOSED ? true : false)
 	}
 
 	// Start reconnect timer

@@ -84,7 +84,7 @@ import {	renderUserList,       // 渲染用户列表 / Render user list
 // Set global configuration parameters
 window.config = {
 	wsAddress: `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`, // WebSocket 服务器地址 / WebSocket server address
-	//wsAddress: `wss://crypt.works`,
+	// wsAddress: `wss://your-worker.example.com`,
 	debug: false                      // 是否开启调试模式 / Enable debug mode
 };
 
@@ -281,6 +281,10 @@ window.addEventListener('DOMContentLoaded', () => {
 		inputSelector: '.input-message-input', // 消息输入框选择器 / Message input selector
 		attachBtnSelector: '.chat-attach-btn', // 附件按钮选择器 / Attach button selector
 		fileInputSelector: '.new-message-wrapper input[type="file"]', // 文件输入框选择器 / File input selector
+		getCurrentUserName: () => {
+			const rd = roomsData[activeRoomIndex];
+			return rd ? (rd.myUserName || '') : ''
+		},
 		onSend: async (message) => {
 			const rd = roomsData[activeRoomIndex];
 			if (rd && rd.chat) {

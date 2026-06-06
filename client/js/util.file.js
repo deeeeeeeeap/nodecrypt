@@ -4,7 +4,12 @@ import { deflate, inflate } from 'fflate';
 import { showFileUploadModal } from './util.fileUpload.js';
 
 // 分卷大小统一配置
-const DEFAULT_VOLUME_SIZE = 256 * 1024; // 512KB
+const DEFAULT_VOLUME_SIZE = 256 * 1024; // 256KB
+const MAX_FILE_VOLUMES = 4096;
+const MAX_VOLUME_DATA_LENGTH = Math.ceil(DEFAULT_VOLUME_SIZE / 3) * 4 + 1024;
+const MAX_FILE_NAME_LENGTH = 255;
+const MAX_FILE_COUNT = 200;
+const FILE_ID_PATTERN = /^file_[a-f0-9-]{16,80}$/i;
 
 // File transfer state management
 // 文件传输状态管理
@@ -352,7 +357,8 @@ export function setupFileSend({
 	inputSelector,
 	attachBtnSelector,
 	fileInputSelector,
-	onSend
+	onSend,
+	getCurrentUserName = null
 }) {
 	const attachBtn = document.querySelector(attachBtnSelector);
 	
@@ -365,9 +371,7 @@ export function setupFileSend({
 			
 			showFileUploadModal(async (files) => {
 				// 传递 userName 给 onSend
-				const userName = window.roomsData && window.activeRoomIndex >= 0
-					? (window.roomsData[window.activeRoomIndex]?.myUserName || '')
-					: '';
+				const userName = typeof getCurrentUserName === 'function' ? (getCurrentUserName() || '') : '';
 				await handleFilesUpload(files, async (msg) => {
 					// 合并 userName 字段
 					await onSend({ ...msg, userName });
@@ -377,10 +381,74 @@ export function setupFileSend({
 	}
 }
 
+function isSafeIntegerInRange(value, min, max) {
+	return Number.isSafeInteger(value) && value >= min && value <= max
+}
+
+function isValidFileId(fileId) {
+	return typeof fileId === 'string' && FILE_ID_PATTERN.test(fileId)
+}
+
+function isValidOptionalHash(value) {
+	return value === undefined || (typeof value === 'string' && value.length > 0 && value.length <= 128)
+}
+
+function isValidFileStartMessage(message) {
+	if (!message || typeof message !== 'object') return false;
+	if (!isValidFileId(message.fileId)) return false;
+	if (typeof message.fileName !== 'string' || message.fileName.length === 0 || message.fileName.length > MAX_FILE_NAME_LENGTH) return false;
+	if (!isSafeIntegerInRange(message.originalSize, 0, Number.MAX_SAFE_INTEGER)) return false;
+	if (!isSafeIntegerInRange(message.compressedSize, 0, Number.MAX_SAFE_INTEGER)) return false;
+	if (!isSafeIntegerInRange(message.totalVolumes, 1, MAX_FILE_VOLUMES)) return false;
+	if (!isValidOptionalHash(message.originalHash) || !isValidOptionalHash(message.archiveHash)) return false;
+	if (message.fileCount !== undefined && !isSafeIntegerInRange(message.fileCount, 1, MAX_FILE_COUNT)) return false;
+	if (message.fileManifest !== undefined && (!Array.isArray(message.fileManifest) || message.fileManifest.length > MAX_FILE_COUNT)) return false;
+	return true
+}
+
+function isValidFileVolumeMessage(message, transfer) {
+	if (!message || !transfer) return false;
+	if (!isValidFileId(message.fileId)) return false;
+	if (!isSafeIntegerInRange(message.volumeIndex, 0, transfer.totalVolumes - 1)) return false;
+	if (typeof message.volumeData !== 'string' || message.volumeData.length === 0 || message.volumeData.length > MAX_VOLUME_DATA_LENGTH) return false;
+	return !transfer.receivedVolumes.has(message.volumeIndex)
+}
+
+function reportFileSendLimit(message) {
+	if (window.addSystemMsg) {
+		window.addSystemMsg(`Failed to send files: ${message}`);
+	}
+}
+
+function validateSelectedFiles(files) {
+	if (files.length > MAX_FILE_COUNT) {
+		return `Too many files selected. Maximum is ${MAX_FILE_COUNT}.`
+	}
+	for (const file of files) {
+		if (typeof file.name !== 'string' || file.name.length === 0 || file.name.length > MAX_FILE_NAME_LENGTH) {
+			return `File name is too long. Maximum is ${MAX_FILE_NAME_LENGTH} characters.`
+		}
+	}
+	return ''
+}
+
+function validateVolumeCount(volumes) {
+	if (!Array.isArray(volumes) || !isSafeIntegerInRange(volumes.length, 1, MAX_FILE_VOLUMES)) {
+		return `File is too large to transfer safely. Maximum is ${MAX_FILE_VOLUMES} chunks.`
+	}
+	return ''
+}
+
 // Handle files upload
 // 处理文件上传
 async function handleFilesUpload(files, onSend) {
 	if (!files || files.length === 0) return;
+
+	const selectedFilesError = validateSelectedFiles(files);
+	if (selectedFilesError) {
+		reportFileSendLimit(selectedFilesError);
+		return
+	}
 	
 	const fileId = generateFileId();
 	
@@ -402,6 +470,11 @@ async function handleFilesUpload(files, onSend) {
 			showProgress();
 			
 			const { volumes, originalSize, compressedSize, originalHash } = await compressFileToVolumes(file);
+			const volumeError = validateVolumeCount(volumes);
+			if (volumeError) {
+				reportFileSendLimit(volumeError);
+				return
+			}
 			
 			updateProgress();
 			
@@ -439,6 +512,11 @@ async function handleFilesUpload(files, onSend) {
 			showProgress();
 			
 			const { volumes, originalSize, compressedSize, archiveHash, fileCount, fileManifest } = await compressFilesToArchive(files);
+			const volumeError = validateVolumeCount(volumes);
+			if (volumeError) {
+				reportFileSendLimit(volumeError);
+				return
+			}
 			
 			updateProgress();
 			
@@ -619,6 +697,7 @@ function updateFileProgress(fileId) {
 // Handle incoming file messages
 // 处理接收到的文件消息
 export function handleFileMessage(message, isPrivate = false) {
+	if (!message || typeof message !== 'object' || typeof message.type !== 'string') return;
 	const { type, fileId, userName } = message;
 	
 	switch (type) {
@@ -638,6 +717,9 @@ export function handleFileMessage(message, isPrivate = false) {
 // 处理文件开始消息
 function handleFileStart(message, isPrivate) {
 	const { fileId, fileName, originalSize, compressedSize, totalVolumes, originalHash, archiveHash, fileCount, fileManifest, isArchive, userName } = message;
+	if (!isValidFileStartMessage(message)) {
+		return
+	}
 	
 	const fileTransfer = {
 		fileId,
@@ -693,7 +775,7 @@ function handleFileVolume(message) {
 	const { fileId, volumeIndex, volumeData } = message;
 	const transfer = window.fileTransfers.get(fileId);
 	
-	if (!transfer) return;
+	if (!isValidFileVolumeMessage(message, transfer)) return;
 	
 	transfer.receivedVolumes.add(volumeIndex);
 	transfer.volumeData[volumeIndex] = volumeData;
@@ -705,6 +787,7 @@ function handleFileVolume(message) {
 // 处理文件完成消息
 function handleFileComplete(message) {
 	const { fileId } = message;
+	if (!isValidFileId(fileId)) return;
 	const transfer = window.fileTransfers.get(fileId);
 	
 	if (!transfer) return;

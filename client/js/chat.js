@@ -28,6 +28,7 @@ import {
 } from './util.i18n.js';
 
 let chatRenderFragment = null;
+let autoGrowFrame = null;
 
 function appendChatNode(chatArea, node) {
 	(chatRenderFragment || chatArea).appendChild(node);
@@ -291,10 +292,6 @@ export function showImageModal(src) {
 		class: 'img-modal-bg'
 	}, `<div class="img-modal-blur"></div><div class="img-modal-content img-modal-content-overflow"><img src="${src}"class="img-modal-img"/><span class="img-modal-close">&times;</span></div>`);
 	document.body.appendChild(modal);
-	on($('.img-modal-close', modal), 'click', () => modal.remove());
-	on(modal, 'click', (e) => {
-		if (e.target === modal) modal.remove()
-	});
 	const img = $('img', modal);
 	let scale = 1;
 	let isDragging = false;
@@ -346,6 +343,22 @@ export function showImageModal(src) {
 			document.body.style.userSelect = ''
 		}
 	}
+	let cleanedUp = false;
+	const cleanup = () => {
+		if (cleanedUp) return;
+		cleanedUp = true;
+		off(window, 'mousemove', onMouseMove);
+		off(window, 'mouseup', onMouseUp);
+		document.body.style.userSelect = ''
+	};
+	const closeModal = () => {
+		cleanup();
+		modal.remove()
+	};
+	on($('.img-modal-close', modal), 'click', closeModal);
+	on(modal, 'click', (e) => {
+		if (e.target === modal) closeModal()
+	});
 	on(window, 'mousemove', onMouseMove);
 	on(window, 'mouseup', onMouseUp);
 	on(img, 'dblclick', function() {
@@ -354,13 +367,6 @@ export function showImageModal(src) {
 		offsetY = 0;
 		updateTransform()
 	});
-	const cleanup = () => {
-		off(window, 'mousemove', onMouseMove);
-		off(window, 'mouseup', onMouseUp);
-		document.body.style.userSelect = ''
-	};
-	on(modal, 'remove', cleanup);
-	on($('.img-modal-close', modal), 'click', cleanup);
 	updateTransform()
 }
 
@@ -451,8 +457,14 @@ function renderFileMessage(fileData, isSender) {
 export function autoGrowInput() {
 	const input = $('.input-message-input');
 	if (!input) return;
-	input.style.height = 'auto';
-	input.style.height = input.scrollHeight + 'px'
+	if (autoGrowFrame) {
+		cancelAnimationFrame(autoGrowFrame)
+	}
+	autoGrowFrame = requestAnimationFrame(() => {
+		autoGrowFrame = null;
+		input.style.height = 'auto';
+		input.style.height = input.scrollHeight + 'px'
+	})
 }
 
 // Handle pasting text as plain text

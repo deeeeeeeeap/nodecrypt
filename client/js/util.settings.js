@@ -229,20 +229,17 @@ function setupSettingsPanel() {
 			themeSelector.scrollLeft += scrollAmount;
 		});
 		// Mouse drag scrolling
-		// 鼠标拖拽滚动
 		let dragStartTime = 0;
 		let hasDragged = false;
-		
-		on(themeSelector, 'mousedown', e => {
-			isDragging = true;
-			hasDragged = false;
-			dragStartTime = Date.now();
-			startX = e.pageX - themeSelector.offsetLeft;
-			scrollLeft = themeSelector.scrollLeft;
-			themeSelector.classList.add('dragging');
-			e.preventDefault(); // Prevent text selection
-		});
-		on(document, 'mousemove', e => {
+		const stopDragging = () => {
+			if (isDragging) {
+				isDragging = false;
+				themeSelector.classList.remove('dragging');
+			}
+			off(document, 'mousemove', handleDragMove);
+			off(document, 'mouseup', stopDragging)
+		};
+		const handleDragMove = e => {
 			if (!isDragging) return;
 			e.preventDefault();
 			const x = e.pageX - themeSelector.offsetLeft;
@@ -255,13 +252,19 @@ function setupSettingsPanel() {
 			}
 			
 			themeSelector.scrollLeft = scrollLeft - walk;
-		});
+		};
 
-		on(document, 'mouseup', () => {
-			if (isDragging) {
-				isDragging = false;
-				themeSelector.classList.remove('dragging');
-			}
+		on(themeSelector, 'mousedown', e => {
+			stopDragging();
+			isDragging = true;
+			hasDragged = false;
+			dragStartTime = Date.now();
+			startX = e.pageX - themeSelector.offsetLeft;
+			scrollLeft = themeSelector.scrollLeft;
+			themeSelector.classList.add('dragging');
+			e.preventDefault(); // Prevent text selection
+			on(document, 'mousemove', handleDragMove);
+			on(document, 'mouseup', stopDragging)
 		});
 		// Touch support for mobile
 		// 移动端触摸支持
