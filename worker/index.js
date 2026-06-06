@@ -14,6 +14,7 @@ const SECURITY_HEADERS = {
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob: https://image.757605.xyz",
     "connect-src 'self' ws: wss: https://cdn.jsdelivr.net",
+    "worker-src 'self' blob:",
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'self'",

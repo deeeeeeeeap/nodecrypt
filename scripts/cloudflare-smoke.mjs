@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { chromium } from 'playwright';
 
 const baseUrl = process.env.SMOKE_BASE_URL || 'http://127.0.0.1:8787/';
@@ -9,6 +11,8 @@ const password = 'pw123456';
 const wrongPassword = 'pw654321';
 const message = `history-smoke-${Date.now()}`;
 const liveMessage = `live-smoke-${Date.now()}`;
+const fileName = `nodecrypt-smoke-${Date.now()}.txt`;
+const filePath = join(tmpdir(), fileName);
 
 function findChromeExecutable() {
 	const candidates = [
@@ -116,6 +120,16 @@ async function sendText(page, text) {
 	}
 }
 
+async function sendFile(page) {
+	writeFileSync(filePath, 'nodecrypt file smoke\n');
+	await page.locator('.chat-attach-btn').click();
+	await page.setInputFiles('#file-upload-input', filePath);
+	await page.locator('.file-upload-send-btn').click();
+	if (!(await waitForChatText(page, fileName, 10000))) {
+		throw new Error(`Sent file did not render: ${fileName}`);
+	}
+}
+
 async function runSmoke() {
 	let wrangler = null;
 	let browser = null;
@@ -134,6 +148,7 @@ async function runSmoke() {
 		const aliceContext = await newEnglishContext(browser);
 		const alice = await aliceContext.newPage();
 		await joinRoom(alice, 'alice');
+		await sendFile(alice);
 		await sendText(alice, message);
 		await alice.waitForTimeout(1200);
 
@@ -187,6 +202,11 @@ async function runSmoke() {
 	} finally {
 		if (browser) {
 			await browser.close();
+		}
+		try {
+			rmSync(filePath);
+		} catch {
+			// Ignore temp-file cleanup failures.
 		}
 		stopProcessTree(wrangler);
 	}
