@@ -19,7 +19,10 @@ const RESUMABLE_TRANSFER_TTL_MS = 10 * 60 * 1000;
 const MAX_NACK_RANGES = 64;
 const MAX_NACK_CHUNKS_PER_REQUEST = 256;
 const MISSING_CHUNK_NACK_DELAY_MS = 3000;
-const REPAIR_RESPONSE_TIMEOUT_MS = 6000;
+const MIN_REPAIR_RESPONSE_TIMEOUT_MS = 6000;
+const MAX_REPAIR_RESPONSE_TIMEOUT_MS = 60000;
+const REPAIR_RECONNECT_GRACE_TIMEOUT_MS = 15000;
+const REPAIR_TIMEOUT_BYTES_PER_MS = 1024;
 const FAST_DEFLATE_LEVEL = 3;
 const PUBLIC_PAYLOAD_SAFETY_FACTOR = 3;
 const FILE_ID_PATTERN = /^file_[a-f0-9-]{16,80}$/i;
@@ -48,6 +51,26 @@ function getRepairStatusText(transfer) {
 		return `Receiving ${receivedCount}/${transfer.totalVolumes || 0}`
 	}
 	return ''
+}
+
+function countMissingRangeChunks(ranges) {
+	if (!Array.isArray(ranges)) return 0;
+	return ranges.reduce((sum, range) => {
+		if (!Array.isArray(range) || range.length < 2) return sum;
+		const start = Number(range[0]);
+		const end = Number(range[1]);
+		if (!Number.isFinite(start) || !Number.isFinite(end)) return sum;
+		return sum + Math.max(0, end - start + 1)
+	}, 0)
+}
+
+function getRepairResponseTimeoutMs(transfer, missingRanges = null) {
+	const missingChunks = countMissingRangeChunks(missingRanges);
+	const chunkSize = Number.isFinite(transfer?.chunkSize) && transfer.chunkSize > 0 ? transfer.chunkSize : DEFAULT_VOLUME_SIZE;
+	const estimated = missingChunks > 0 ?
+		Math.ceil((missingChunks * chunkSize) / REPAIR_TIMEOUT_BYTES_PER_MS) :
+		MIN_REPAIR_RESPONSE_TIMEOUT_MS;
+	return Math.max(MIN_REPAIR_RESPONSE_TIMEOUT_MS, Math.min(MAX_REPAIR_RESPONSE_TIMEOUT_MS, estimated))
 }
 
 export function getFileTransferPresentation(fileId, isSender = false) {
@@ -1210,14 +1233,18 @@ function refreshRepairFailureCheckOnVolume(transfer, message) {
 	if (transfer.repairStatus === 'failed') {
 		transfer.repairStatus = 'waiting'
 	}
-	scheduleRepairFailureCheck(transfer, transfer.nackState.requestSeq)
+	scheduleRepairFailureCheck(transfer, transfer.nackState.requestSeq, transfer.repairTimeoutMs)
 }
 
-function scheduleRepairFailureCheck(transfer, requestSeq) {
+function scheduleRepairFailureCheck(transfer, requestSeq, timeoutMs = null) {
 	if (!transfer || transfer.direction !== 'receive') return;
 	if (transfer.repairFailureTimer) {
 		clearTimeout(transfer.repairFailureTimer)
 	}
+	const effectiveTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0 ?
+		timeoutMs :
+		getRepairResponseTimeoutMs(transfer);
+	transfer.repairTimeoutMs = effectiveTimeoutMs;
 	transfer.repairFailureTimer = setTimeout(() => {
 		transfer.repairFailureTimer = null;
 		if (
@@ -1229,7 +1256,7 @@ function scheduleRepairFailureCheck(transfer, requestSeq) {
 			transfer.repairStatus = 'failed';
 			updateFileProgress(transfer.fileId)
 		}
-	}, REPAIR_RESPONSE_TIMEOUT_MS)
+	}, effectiveTimeoutMs)
 }
 
 // Ask the original sender to privately resend missing direct-transfer chunks.
@@ -1255,9 +1282,11 @@ function requestMissingFileVolumes(transfer, reason, options = {}, requestedRang
 	if (!options.forceRepairRequest && transfer.nackState.lastMissingKey === missingKey && Date.now() - transfer.nackState.lastRequestedAt < MISSING_CHUNK_NACK_DELAY_MS) {
 		return
 	}
+	const repairTimeoutMs = getRepairResponseTimeoutMs(transfer, missingRanges);
 	transfer.nackState.requestSeq += 1;
 	transfer.nackState.lastRequestedAt = Date.now();
 	transfer.nackState.lastMissingKey = missingKey;
+	transfer.repairTimeoutMs = repairTimeoutMs;
 	transfer.repairStatus = 'requesting';
 	updateFileProgress(transfer.fileId);
 
@@ -1276,15 +1305,25 @@ function requestMissingFileVolumes(transfer, reason, options = {}, requestedRang
 		});
 		Promise.resolve(sendResult)
 			.then((sent) => {
-				transfer.repairStatus = sent ? 'waiting' : 'failed';
+				const waitingForReconnect = !sent &&
+					typeof options.isConnectionOpen === 'function' &&
+					!options.isConnectionOpen();
+				transfer.repairStatus = sent || waitingForReconnect ? 'waiting' : 'failed';
 				updateFileProgress(transfer.fileId);
-				if (sent) {
-					scheduleRepairFailureCheck(transfer, requestSeq)
+				if (sent || waitingForReconnect) {
+					const timeoutMs = waitingForReconnect ?
+						Math.max(repairTimeoutMs, REPAIR_RECONNECT_GRACE_TIMEOUT_MS) :
+						repairTimeoutMs;
+					scheduleRepairFailureCheck(transfer, requestSeq, timeoutMs)
 				}
 			})
 			.catch((error) => {
-				transfer.repairStatus = 'failed';
+				const waitingForReconnect = typeof options.isConnectionOpen === 'function' && !options.isConnectionOpen();
+				transfer.repairStatus = waitingForReconnect ? 'waiting' : 'failed';
 				updateFileProgress(transfer.fileId);
+				if (waitingForReconnect) {
+					scheduleRepairFailureCheck(transfer, requestSeq, Math.max(repairTimeoutMs, REPAIR_RECONNECT_GRACE_TIMEOUT_MS))
+				}
 				console.error('File NACK request failed:', error)
 			})
 	} catch (error) {
@@ -1332,7 +1371,7 @@ async function handleFileNack(message, options = {}) {
 		return
 	}
 	if (transfer.scope === 'private' && transfer.targetClientId && transfer.targetClientId !== requesterClientId) {
-		if (transfer.targetClientName && options.senderUserName === transfer.targetClientName) {
+		if (transfer.targetClientName && options.senderUserName === transfer.targetClientName && options.senderUserNameIsUnique === true) {
 			transfer.targetClientId = requesterClientId
 		} else {
 			return

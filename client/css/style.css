@@ -1120,7 +1120,7 @@ body.login-page {
 
 .file-message {
 	overflow: hidden;
-	transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+	transition: opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1), transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 	max-width: 320px;
 	width: 100%;
 	position: relative;
@@ -1180,7 +1180,7 @@ body.login-page {
 	font-size: 12px;
 	font-weight: 600;
 	cursor: pointer;
-	transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+	transition: opacity 0.3s cubic-bezier(0.4, 0, 0.2, 1), transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), background 0.3s ease;
 	display: none;
 	align-items: center;
 	justify-content: center;
@@ -1290,6 +1290,20 @@ body.login-page {
 @keyframes shimmer {
 	0% { left: -100%; }
 	100% { left: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.file-message,
+	.file-download-btn,
+	.file-progress-container,
+	.file-progress {
+		transition: none;
+	}
+
+	.file-progress::after,
+	.file-download-btn.show.animate-in {
+		animation: none;
+	}
 }
 
 .file-status {

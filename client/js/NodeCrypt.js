@@ -75,6 +75,8 @@ class NodeCrypt {
 		this.connection = null;
 		this.reconnect = null;
 		this.ping = null;
+		this.lastPongAt = 0;
+		this.lastPingAt = 0;
 		this.channel = {};
 		this.setCredentials = this.setCredentials.bind(this);
 		this.connect = this.connect.bind(this);
@@ -94,6 +96,7 @@ class NodeCrypt {
 		this.stopPing = this.stopPing.bind(this);
 		this.disconnect = this.disconnect.bind(this);
 		this.sendMessage = this.sendMessage.bind(this);
+		this.getWritableTimeout = this.getWritableTimeout.bind(this);
 		this.sendClientMessage = this.sendClientMessage.bind(this);
 		this.sendChannelMessage = this.sendChannelMessage.bind(this);
 		this.storeHistoryMessage = this.storeHistoryMessage.bind(this);
@@ -143,6 +146,8 @@ class NodeCrypt {
 		this.serverKeys = null;
 		this.serverShared = null;
 		this.historyKey = null;
+		this.lastPongAt = 0;
+		this.lastPingAt = 0;
 		this.channel = {};
 		try {
 			this.connection = new WebSocket(wsAddress);
@@ -208,12 +213,15 @@ class NodeCrypt {
 		this.callbacks.onServerTrustError = null;
 		this.callbacks.onClientSecured = null;
 		this.callbacks.onClientList = null;
+		this.callbacks.onClientLeft = null;
 		this.callbacks.onClientMessage = null;
 		this.callbacks.onHistoryMessages = null;
 		this.serverKeys = null;
 		this.serverShared = null;
 		this.historyKey = null;
 		this.credentials = null;
+		this.lastPongAt = 0;
+		this.lastPingAt = 0;
 		if (this.connection) {
 			this.connection.onopen = null;
 			this.connection.onmessage = null;
@@ -234,6 +242,8 @@ class NodeCrypt {
 	// WebSocket 连接打开事件处理
 	async onOpen() {
 		this.logEvent('onOpen');
+		this.lastPongAt = Date.now();
+		this.lastPingAt = 0;
 		this.startPing();
 		try {
 			this.serverKeys = await crypto.subtle.generateKey({
@@ -254,6 +264,7 @@ class NodeCrypt {
 			return
 		}
 		if (event.data === 'pong') {
+			this.lastPongAt = Date.now();
 			return
 		}
 		this.logEvent('onMessage', event.data);
@@ -521,7 +532,24 @@ class NodeCrypt {
 		this.stopPing();
 		this.logEvent('startPing');
 		this.ping = setInterval(() => {
-			this.sendMessage('ping')
+			const now = Date.now();
+			if (this.lastPongAt && now - this.lastPongAt > this.config.pingInterval * 2) {
+				this.logEvent('ping-timeout');
+				try {
+					if (this.connection) this.connection.close()
+				} catch (error) {
+					this.logEvent('ping-timeout-close', error, 'error')
+				}
+				return
+			}
+			this.lastPingAt = now;
+			if (!this.sendMessage('ping') && this.connection) {
+				try {
+					this.connection.close()
+				} catch (error) {
+					this.logEvent('ping-send-close', error, 'error')
+				}
+			}
 		}, this.config.pingInterval)
 	}
 
@@ -575,6 +603,11 @@ class NodeCrypt {
 		return this.isOpen()
 	}
 
+	getWritableTimeout(type, data) {
+		const payloadType = this.isString(type) ? type : (data && this.isString(data.type) ? data.type : '');
+		return payloadType.startsWith('file_') ? 120000 : 30000
+	}
+
 	async sendClientMessage(clientId, type, data) {
 		if (!this.serverShared || !this.isString(clientId) || !this.isString(type)) {
 			return false
@@ -600,7 +633,7 @@ class NodeCrypt {
 			if (!this.isOpen() || payload.length === 0 || payload.length > (8 * 1024 * 1024)) {
 				return false
 			}
-			if (!(await this.waitForWritable())) {
+			if (!(await this.waitForWritable(4 * 1024 * 1024, this.getWritableTimeout(type, data)))) {
 				return false
 			}
 			return this.sendMessage(payload)
@@ -613,7 +646,7 @@ class NodeCrypt {
 	// Send a message to all channels
 	// 向所有频道发送消息
 	async sendChannelMessage(type, data) {
-		if (this.serverShared) {
+		if (this.serverShared && this.isOpen()) {
 			try {
 				let payloads = {};
 				for (const clientId in this.channel) {
@@ -636,13 +669,17 @@ class NodeCrypt {
 					if (!this.isOpen() || payload.length === 0 || payload.length > (8 * 1024 * 1024)) {
 						return (false)
 					}
-					if (!(await this.waitForWritable())) {
+					if (!(await this.waitForWritable(4 * 1024 * 1024, this.getWritableTimeout(type, data)))) {
 						return (false)
 					}
-					this.connection.send(payload)
+					if (!this.sendMessage(payload)) {
+						return (false)
+					}
 				}
 				if (type === 'text' && this.isString(data)) {
-					this.storeHistoryMessage(type, data)
+					if (!(await this.storeHistoryMessage(type, data))) {
+						return (false)
+					}
 				}
 				return (true)
 			} catch (error) {
@@ -658,6 +695,9 @@ class NodeCrypt {
 		try {
 			if (!this.serverShared || type !== 'text' || !this.isString(data)) {
 				return (false)
+			}
+			if (!this.credentials || !this.credentials.hasPassword) {
+				return (true)
 			}
 
 			const encryptedHistory = await this.encryptHistoryMessage(type, data);

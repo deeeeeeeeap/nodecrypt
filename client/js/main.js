@@ -182,6 +182,16 @@ window.addEventListener('DOMContentLoaded', () => {
 	// 设置图片粘贴功能
 	// Setup image paste functionality
 	const imagePasteHandler = setupImagePaste('.input-message-input');
+	let isSendingMessage = false;
+	let sendButton = null;
+
+	function setMessageSending(sending) {
+		isSendingMessage = sending;
+		if (sendButton) {
+			sendButton.disabled = sending;
+			sendButton.classList.toggle('sending', sending)
+		}
+	}
 	
 	if (input) {
 		input.focus(); // 自动聚焦 / Auto focus
@@ -203,6 +213,7 @@ window.addEventListener('DOMContentLoaded', () => {
 	// 发送消息的统一函数
 	// Unified function to send messages
 	async function sendMessage() {
+		if (isSendingMessage) return;
 		const text = input.innerText.trim(); // 获取输入的文本 / Get input text
 		const images = imagePasteHandler ? imagePasteHandler.getCurrentImages() : []; // 获取所有图片
 
@@ -210,8 +221,10 @@ window.addEventListener('DOMContentLoaded', () => {
 		const rd = roomsData[activeRoomIndex]; // 当前房间数据 / Current room data
 		
 		if (rd && rd.chat) {
-			let sendSucceeded = false;
-			if (images.length > 0) {
+			setMessageSending(true);
+			try {
+				let sendSucceeded = false;
+				if (images.length > 0) {
 				// 发送包含图片的消息 (支持多图和文字合并)
 				// Send message with images (supports multiple images and text combined)
 				const messageContent = {
@@ -220,9 +233,11 @@ window.addEventListener('DOMContentLoaded', () => {
 				};
 
 				if (rd.privateChatTargetId) {
+					const targetClientId = rd.privateChatTargetId;
+					const targetClientName = rd.privateChatTargetName;
 					// 私聊图片消息加密并发送
 					// Encrypt and send private image message
-					const targetClient = rd.chat.channel[rd.privateChatTargetId];
+					const targetClient = rd.chat.channel[targetClientId];
 					if (targetClient && targetClient.shared) {
 						const clientMessagePayload = {
 							a: 'm',
@@ -233,7 +248,7 @@ window.addEventListener('DOMContentLoaded', () => {
 						const serverRelayPayload = {
 							a: 'c',
 							p: encryptedClientMessage,
-							c: rd.privateChatTargetId
+							c: targetClientId
 						};
 						const encryptedMessageForServer = rd.chat.encryptServerMessage(serverRelayPayload, rd.chat.serverShared);
 						if (typeof rd.chat.waitForWritable === 'function' && !(await rd.chat.waitForWritable())) {
@@ -247,7 +262,7 @@ window.addEventListener('DOMContentLoaded', () => {
 						addMsg(messageContent, false, 'image_private');
 						sendSucceeded = true;
 					} else {
-						addSystemMsg(`${t('system.private_message_failed', 'Cannot send private message to')} ${rd.privateChatTargetName}. ${t('system.user_not_connected', 'User might not be fully connected.')}`)
+						addSystemMsg(`${t('system.private_message_failed', 'Cannot send private message to')} ${targetClientName}. ${t('system.user_not_connected', 'User might not be fully connected.')}`)
 						return
 					}
 				} else {
@@ -267,9 +282,11 @@ window.addEventListener('DOMContentLoaded', () => {
 				// 发送纯文本消息
 				// Send text-only message
 				if (rd.privateChatTargetId) {
+					const targetClientId = rd.privateChatTargetId;
+					const targetClientName = rd.privateChatTargetName;
 					// 私聊消息加密并发送
 					// Encrypt and send private message
-					const targetClient = rd.chat.channel[rd.privateChatTargetId];
+					const targetClient = rd.chat.channel[targetClientId];
 					if (targetClient && targetClient.shared) {
 						const clientMessagePayload = {
 							a: 'm',
@@ -280,7 +297,7 @@ window.addEventListener('DOMContentLoaded', () => {
 						const serverRelayPayload = {
 							a: 'c',
 							p: encryptedClientMessage,
-							c: rd.privateChatTargetId
+							c: targetClientId
 						};
 						const encryptedMessageForServer = rd.chat.encryptServerMessage(serverRelayPayload, rd.chat.serverShared);
 						if (typeof rd.chat.waitForWritable === 'function' && !(await rd.chat.waitForWritable())) {
@@ -294,7 +311,7 @@ window.addEventListener('DOMContentLoaded', () => {
 						addMsg(text, false, 'text_private');
 						sendSucceeded = true;
 					} else {
-						addSystemMsg(`${t('system.private_message_failed', 'Cannot send private message to')} ${rd.privateChatTargetName}. ${t('system.user_not_connected', 'User might not be fully connected.')}`)
+						addSystemMsg(`${t('system.private_message_failed', 'Cannot send private message to')} ${targetClientName}. ${t('system.user_not_connected', 'User might not be fully connected.')}`)
 						return
 					}
 				} else {
@@ -319,12 +336,15 @@ window.addEventListener('DOMContentLoaded', () => {
 				imagePasteHandler.refreshPlaceholder(); // 更新 placeholder 状态
 			}
 			autoGrowInput(); // 调整输入框高度
+			} finally {
+				setMessageSending(false)
+			}
 		}
 	}
 	
 	// 为发送按钮添加点击事件
 	// Add click event for send button
-	const sendButton = document.querySelector('.send-message-btn');
+	sendButton = document.querySelector('.send-message-btn');
 	if (sendButton) {
 		sendButton.addEventListener('click', () => sendMessage().catch(handleMessageSendError));
 	}
@@ -379,7 +399,7 @@ window.addEventListener('DOMContentLoaded', () => {
 							c: targetClientId
 						};
 						const encryptedMessageForServer = rd.chat.encryptServerMessage(serverRelayPayload, rd.chat.serverShared);
-						if (typeof rd.chat.waitForWritable === 'function' && !(await rd.chat.waitForWritable())) {
+						if (typeof rd.chat.waitForWritable === 'function' && !(await rd.chat.waitForWritable(4 * 1024 * 1024, 120000))) {
 							throw new Error(t('system.file_send_failed', 'Failed to send files:'));
 						}
 						if (!rd.chat.sendMessage(encryptedMessageForServer)) {

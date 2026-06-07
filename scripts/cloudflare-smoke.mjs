@@ -37,6 +37,8 @@ const tempFilePaths = [
 	expiredLargeFilePath,
 	reconnectLargeFilePath,
 ];
+const pageErrors = [];
+const consoleErrors = [];
 
 function findChromeExecutable() {
 	const candidates = [
@@ -149,10 +151,12 @@ async function newEnglishContext(browser) {
 
 function attachPageDiagnostics(page, name) {
 	page.on('pageerror', (error) => {
+		pageErrors.push({ page: name, text: error.message });
 		console.error(`[${name}] pageerror: ${error.message}`);
 	});
 	page.on('console', (message) => {
 		if (message.type() === 'error') {
+			consoleErrors.push({ page: name, text: message.text() });
 			console.error(`[${name}] console error: ${message.text()}`);
 		}
 	});
@@ -169,6 +173,33 @@ async function waitForChatText(page, expected, timeoutMs = 15000) {
 		await page.waitForTimeout(250);
 	}
 	return false;
+}
+
+async function countChatTextOccurrences(page, expected) {
+	return page.evaluate((needle) => {
+		const text = document.querySelector('#chat-area')?.innerText || '';
+		if (!needle) return 0;
+		let count = 0;
+		let index = text.indexOf(needle);
+		while (index !== -1) {
+			count += 1;
+			index = text.indexOf(needle, index + needle.length)
+		}
+		return count
+	}, expected);
+}
+
+async function inputIsCleared(page) {
+	return page.evaluate(() => (document.querySelector('.input-message-input')?.innerText || '').trim() === '');
+}
+
+async function hasUnexpectedSendFailureText(page) {
+	return page.evaluate(() => {
+		const text = document.querySelector('#chat-area')?.innerText || '';
+		return text.includes('Message send failed') ||
+			text.includes('Failed to send files') ||
+			text.includes('Cannot send private')
+	});
 }
 
 async function joinRoom(page, userName, roomPassword = password) {
@@ -193,6 +224,13 @@ async function sendText(page, text) {
 	await page.keyboard.press('Enter');
 	if (!(await waitForChatText(page, text, 10000))) {
 		throw new Error(`Sent message did not render: ${text}`);
+	}
+	if (!(await inputIsCleared(page))) {
+		throw new Error(`Input was not cleared after sending: ${text}`);
+	}
+	const occurrences = await countChatTextOccurrences(page, text);
+	if (occurrences !== 1) {
+		throw new Error(`Sent message rendered ${occurrences} times instead of once: ${text}`);
 	}
 }
 
@@ -275,14 +313,40 @@ async function getFileUiState(page, expectedName) {
 		const progressContainer = message.querySelector('.file-progress-container');
 		const progress = message.querySelector('.file-progress');
 		const downloadButton = message.querySelector('.file-download-btn');
+		const progressStyle = progressContainer ? getComputedStyle(progressContainer) : null;
+		const downloadStyle = downloadButton ? getComputedStyle(downloadButton) : null;
 		return {
 			state: message.getAttribute('data-file-state') || '',
 			statusText: status ? (status.textContent || '').trim() : '',
 			progressWidth: progress ? progress.style.width : '',
-			progressVisible: progressContainer ? getComputedStyle(progressContainer).display !== 'none' : false,
-			downloadVisible: downloadButton ? getComputedStyle(downloadButton).display !== 'none' : false,
+			progressVisible: progressStyle ? progressStyle.display !== 'none' && progressStyle.visibility !== 'hidden' && Number(progressStyle.opacity || 1) > 0.01 : false,
+			downloadVisible: downloadStyle ? downloadStyle.display !== 'none' && downloadStyle.visibility !== 'hidden' && Number(downloadStyle.opacity || 1) > 0.01 : false,
 		}
 	}, expectedName);
+}
+
+function isRepairWaitingUi(state) {
+	return Boolean(state &&
+		state.state === 'repair-waiting' &&
+		state.statusText.includes('Waiting for repair') &&
+		state.progressVisible &&
+		!state.downloadVisible)
+}
+
+function isRepairFailedUi(state) {
+	return Boolean(state &&
+		state.state === 'repair-failed' &&
+		state.statusText.includes('Repair failed') &&
+		state.progressVisible &&
+		!state.downloadVisible)
+}
+
+function isRepairedUi(state) {
+	return Boolean(state &&
+		state.state === 'repaired' &&
+		state.statusText.includes('Repaired') &&
+		state.downloadVisible &&
+		state.progressWidth === '100%')
 }
 
 async function waitForFileUiState(page, expectedName, expectedState, timeoutMs = 15000) {
@@ -639,6 +703,8 @@ async function runSmoke() {
 		const bobExpiredRepairWaitingUiState = await getFileUiState(bob, expiredLargeFileName);
 		const bobExpiredRepairFailedUi = await waitForFileUiState(bob, expiredLargeFileName, 'repair-failed', 10000);
 		const bobExpiredRepairFailedUiState = await getFileUiState(bob, expiredLargeFileName);
+		const bobExpiredRepairWaitingUiOk = isRepairWaitingUi(bobExpiredRepairWaitingUiState);
+		const bobExpiredRepairFailedUiOk = isRepairFailedUi(bobExpiredRepairFailedUiState);
 		const bobExpiredLargeTransferState = await getTransferState(bob, expiredLargeFileName);
 		const aliceExpiredLargeTransferState = await getTransferState(alice, expiredLargeFileName);
 		await restoreIncomingFileChunkDropper(bob);
@@ -650,7 +716,9 @@ async function runSmoke() {
 			expiredSenderWindow &&
 			releasedExpiredFileComplete &&
 			bobExpiredRepairWaitingUi &&
+			bobExpiredRepairWaitingUiOk &&
 			bobExpiredRepairFailedUi &&
+			bobExpiredRepairFailedUiOk &&
 			bobExpiredLargeTransferState &&
 			bobExpiredLargeTransferState.status !== 'completed' &&
 			bobExpiredLargeTransferState.nackRequests > 0 &&
@@ -668,10 +736,12 @@ async function runSmoke() {
 		const releasedReconnectFileCompleteWhileClosed = await releaseDelayedFileComplete(bob);
 		await bob.waitForTimeout(500);
 		const bobReconnectUiStateAfterClosedRequest = await getFileUiState(bob, reconnectLargeFileName);
+		const bobReconnectUiWaitingAfterClosedRequest = isRepairWaitingUi(bobReconnectUiStateAfterClosedRequest);
 		const bobReconnectSocketReopened = await waitForLatestSmokeSocketOpen(bob, reconnectSocketClose.count + 1, 25000);
 		const bobHasCompletedReconnectLargeFile = await waitForFileTransferCompleted(bob, reconnectLargeFileName, 60000);
 		const bobReconnectUiRepaired = await waitForFileUiState(bob, reconnectLargeFileName, 'repaired', 10000);
 		const bobReconnectUiState = await getFileUiState(bob, reconnectLargeFileName);
+		const bobReconnectUiRepairedOk = isRepairedUi(bobReconnectUiState);
 		const bobReconnectTransferState = await getTransferState(bob, reconnectLargeFileName);
 		const aliceReconnectTransferState = await getTransferState(alice, reconnectLargeFileName);
 		await restoreIncomingFileChunkDropper(bob);
@@ -681,9 +751,11 @@ async function runSmoke() {
 			delayedReconnectFileComplete &&
 			reconnectSocketClose.closed &&
 			releasedReconnectFileCompleteWhileClosed &&
+			bobReconnectUiWaitingAfterClosedRequest &&
 			bobReconnectSocketReopened &&
 			bobHasCompletedReconnectLargeFile &&
 			bobReconnectUiRepaired &&
+			bobReconnectUiRepairedOk &&
 			bobReconnectTransferState &&
 			bobReconnectTransferState.status === 'completed' &&
 			bobReconnectTransferState.nackRequests > 1 &&
@@ -705,6 +777,10 @@ async function runSmoke() {
 		await eve.waitForTimeout(1800);
 		const eveText = await chatText(eve);
 		const eveIsIsolated = !eveText.includes(message) && !eveText.includes(liveMessage) && !eveText.includes('alice') && !eveText.includes('bob');
+		const aliceHasUnexpectedSendFailure = await hasUnexpectedSendFailureText(alice);
+		const bobHasUnexpectedSendFailure = await hasUnexpectedSendFailureText(bob);
+		const danaHasUnexpectedSendFailure = await hasUnexpectedSendFailureText(dana);
+		const eveHasUnexpectedSendFailure = await hasUnexpectedSendFailureText(eve);
 
 		await eveContext.close();
 		await danaContext.close();
@@ -719,10 +795,18 @@ async function runSmoke() {
 		await charlie.waitForTimeout(1800);
 		const charlieText = await chatText(charlie);
 		const charlieHasOldMessage = charlieText.includes(message);
+		const charlieHasUnexpectedSendFailure = await hasUnexpectedSendFailureText(charlie);
 		await charlieContext.close();
 
+		const noUnexpectedSendFailures = !aliceHasUnexpectedSendFailure &&
+			!bobHasUnexpectedSendFailure &&
+			!danaHasUnexpectedSendFailure &&
+			!eveHasUnexpectedSendFailure &&
+			!charlieHasUnexpectedSendFailure;
+		const diagnosticsClean = pageErrors.length === 0 && consoleErrors.length === 0;
+
 		const result = {
-			ok: bobHasHistory && bobHasLoadedNotice && bobHasLiveFile && bobHasLargeFile && bobHasCompletedLargeFile && bobNackRepairedLargeFile && bobNackRepairedPrivateLargeFile && publicResendWasSinglecast && expiredRepairWindowRejected && bobReconnectRepairCompleted && bobHasLiveMessage && eveIsIsolated && !charlieHasOldMessage,
+			ok: bobHasHistory && bobHasLoadedNotice && bobHasLiveFile && bobHasLargeFile && bobHasCompletedLargeFile && bobNackRepairedLargeFile && bobNackRepairedPrivateLargeFile && publicResendWasSinglecast && expiredRepairWindowRejected && bobReconnectRepairCompleted && bobHasLiveMessage && eveIsIsolated && !charlieHasOldMessage && noUnexpectedSendFailures && diagnosticsClean,
 			roomName,
 			message,
 			liveMessage,
@@ -763,8 +847,10 @@ async function runSmoke() {
 			releasedExpiredFileComplete,
 			bobExpiredRepairWaitingUi,
 			bobExpiredRepairWaitingUiState,
+			bobExpiredRepairWaitingUiOk,
 			bobExpiredRepairFailedUi,
 			bobExpiredRepairFailedUiState,
+			bobExpiredRepairFailedUiOk,
 			expiredRepairWindowRejected,
 			bobExpiredLargeTransferState,
 			aliceExpiredLargeTransferState,
@@ -775,9 +861,11 @@ async function runSmoke() {
 			reconnectSocketClose,
 			releasedReconnectFileCompleteWhileClosed,
 			bobReconnectUiStateAfterClosedRequest,
+			bobReconnectUiWaitingAfterClosedRequest,
 			bobReconnectSocketReopened,
 			bobHasCompletedReconnectLargeFile,
 			bobReconnectUiRepaired,
+			bobReconnectUiRepairedOk,
 			bobReconnectRepairCompleted,
 			bobReconnectTransferState,
 			aliceReconnectTransferState,
@@ -785,6 +873,17 @@ async function runSmoke() {
 			bobHasLiveMessage,
 			eveIsIsolated,
 			charlieHasOldMessage,
+			noUnexpectedSendFailures,
+			unexpectedSendFailures: {
+				alice: aliceHasUnexpectedSendFailure,
+				bob: bobHasUnexpectedSendFailure,
+				dana: danaHasUnexpectedSendFailure,
+				eve: eveHasUnexpectedSendFailure,
+				charlie: charlieHasUnexpectedSendFailure,
+			},
+			diagnosticsClean,
+			pageErrors,
+			consoleErrors,
 		};
 		console.log(JSON.stringify(result, null, 2));
 		if (!result.ok) {

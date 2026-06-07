@@ -246,6 +246,7 @@ function resumeRoomFileRepairs(idx, user) {
 		roomIndex: idx,
 		clientId: user.clientId,
 		userName,
+		isConnectionOpen: () => Boolean(rd.chat && typeof rd.chat.isOpen === 'function' && rd.chat.isOpen()),
 		sendClientMessage: (targetClientId, type, data) => {
 			if (!rd.chat || typeof rd.chat.sendClientMessage !== 'function') {
 				return false
@@ -329,14 +330,27 @@ export function handleClientSecured(idx, user) {
 export function handleClientLeft(idx, clientId) {
 	const rd = roomsData[idx];
 	if (!rd) return;
-	if (rd.privateChatTargetId === clientId) {
+	const user = rd.userMap[clientId];
+	const wasPrivateTarget = rd.privateChatTargetId === clientId;
+	if (wasPrivateTarget) {
 		rd.privateChatTargetId = null;
 		rd.privateChatTargetName = null;
 		if (activeRoomIndex === idx) {
 			updateChatInputStyle()
 		}
 	}
-	const user = rd.userMap[clientId];
+	if (!user && !wasPrivateTarget) {
+		rd.userList = rd.userList.filter(u => u.clientId !== clientId);
+		delete rd.userMap[clientId];
+		if (rd.rawUserIds instanceof Set) {
+			rd.rawUserIds.delete(clientId)
+		}
+		if (activeRoomIndex === idx) {
+			renderUserList(false);
+			renderMainHeader()
+		}
+		return
+	}
 	const name = user ? (user.userName || user.username || user.name || 'Anonymous') : 'Anonymous';
 	const msg = `${name} ${t('system.left', 'left the conversation')}`;
 	rd.messages.push({
@@ -346,6 +360,9 @@ export function handleClientLeft(idx, clientId) {
 	if (activeRoomIndex === idx) addSystemMsg(msg, true);
 	rd.userList = rd.userList.filter(u => u.clientId !== clientId);
 	delete rd.userMap[clientId];
+	if (rd.rawUserIds instanceof Set) {
+		rd.rawUserIds.delete(clientId)
+	}
 	if (activeRoomIndex === idx) {
 		renderUserList(false);
 		renderMainHeader()
@@ -371,6 +388,9 @@ export function handleClientMessage(idx, msg) {
 		if (!realUserName && msg.clientId && newRd.userMap[msg.clientId]) {
 			realUserName = newRd.userMap[msg.clientId].userName || newRd.userMap[msg.clientId].username || newRd.userMap[msg.clientId].name;
 		}
+		const senderUserNameIsUnique = realUserName ?
+			(newRd.userList || []).filter(user => getRoomUserName(user) === realUserName).length === 1 :
+			false;
 
 		// Part 1: Update message history and send notifications (for 'file_start' type)
 		if (msgType === 'file_start' || msgType === 'file_start_private') {
@@ -407,6 +427,8 @@ export function handleClientMessage(idx, msg) {
 				roomIndex: idx,
 				senderClientId: msg.clientId,
 				senderUserName: realUserName,
+				senderUserNameIsUnique,
+				isConnectionOpen: () => Boolean(newRd.chat && typeof newRd.chat.isOpen === 'function' && newRd.chat.isOpen()),
 				sendClientMessage: (targetClientId, type, data) => {
 					if (!newRd.chat || typeof newRd.chat.sendClientMessage !== 'function') {
 						return false
