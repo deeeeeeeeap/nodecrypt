@@ -20,6 +20,9 @@ import {
 	$id,
 	createElement
 } from './util.dom.js';
+import {
+	resumePendingFileRepairs
+} from './util.file.js';
 import { t } from './util.i18n.js';
 let roomsData = [];
 let activeRoomIndex = -1;
@@ -217,10 +220,35 @@ export function handleClientList(idx, list, selfId) {
 		rd.isInitialized = true;
 		rd.knownUserIds = new Set(list.map(u => u.clientId))
 	}
+	list.forEach(user => resumeRoomFileRepairs(idx, user))
 }
 
 function formatHistoryLoadedMessage(count) {
 	return t('system.history_loaded_count', '{count} historical messages loaded').replace('{count}', count)
+}
+
+function getRoomUserName(user) {
+	return user ? (user.userName || user.username || user.name || '') : ''
+}
+
+function resumeRoomFileRepairs(idx, user) {
+	const rd = roomsData[idx];
+	if (!rd || !user || !user.clientId) return;
+	const userName = getRoomUserName(user);
+	if (!userName) return;
+	const sameNameCount = (rd.userList || []).filter(candidate => getRoomUserName(candidate) === userName).length;
+	if (sameNameCount > 1) return;
+	resumePendingFileRepairs({
+		roomIndex: idx,
+		clientId: user.clientId,
+		userName,
+		sendClientMessage: (targetClientId, type, data) => {
+			if (!rd.chat || typeof rd.chat.sendClientMessage !== 'function') {
+				return false
+			}
+			return rd.chat.sendClientMessage(targetClientId, type, data)
+		}
+	})
 }
 
 // Handle temporary encrypted room history from the relay.
@@ -273,6 +301,7 @@ export function handleClientSecured(idx, user) {
 		renderUserList(false);
 		renderMainHeader()
 	}
+	resumeRoomFileRepairs(idx, user);
 	if (!rd.isInitialized) {
 		return
 	}

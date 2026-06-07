@@ -21,16 +21,20 @@ const multiReceiverLargeFileName = `nodecrypt-multi-large-${Date.now()}.bin`;
 const multiReceiverLargeFilePath = join(tmpdir(), multiReceiverLargeFileName);
 const expiredLargeFileName = `nodecrypt-expired-large-${Date.now()}.bin`;
 const expiredLargeFilePath = join(tmpdir(), expiredLargeFileName);
+const reconnectLargeFileName = `nodecrypt-reconnect-large-${Date.now()}.bin`;
+const reconnectLargeFilePath = join(tmpdir(), reconnectLargeFileName);
 const largeFileDropIndices = [3, 4, 8];
 const privateLargeFileDropIndices = [2, 5];
 const multiReceiverDropIndices = [6, 7];
 const expiredLargeFileDropIndices = [4];
+const reconnectLargeFileDropIndices = [5];
 const tempFilePaths = [
 	filePath,
 	largeFilePath,
 	privateLargeFilePath,
 	multiReceiverLargeFilePath,
 	expiredLargeFilePath,
+	reconnectLargeFilePath,
 ];
 
 function findChromeExecutable() {
@@ -97,6 +101,18 @@ async function newEnglishContext(browser) {
 			theme: 'theme1',
 			language: 'en',
 		}));
+		const NativeWebSocket = window.WebSocket;
+		window.__nodecryptSmokeSockets = [];
+		window.WebSocket = function SmokeTrackedWebSocket(...args) {
+			const socket = new NativeWebSocket(...args);
+			window.__nodecryptSmokeSockets.push(socket);
+			return socket;
+		};
+		window.WebSocket.prototype = NativeWebSocket.prototype;
+		Object.defineProperty(window.WebSocket, 'OPEN', { value: NativeWebSocket.OPEN });
+		Object.defineProperty(window.WebSocket, 'CLOSED', { value: NativeWebSocket.CLOSED });
+		Object.defineProperty(window.WebSocket, 'CLOSING', { value: NativeWebSocket.CLOSING });
+		Object.defineProperty(window.WebSocket, 'CONNECTING', { value: NativeWebSocket.CONNECTING });
 	});
 	return context;
 }
@@ -217,6 +233,70 @@ async function waitForFileTransferCompleted(page, expectedName, timeoutMs = 4500
 	}
 }
 
+async function getFileUiState(page, expectedName) {
+	return page.evaluate((fileNameToFind) => {
+		const messages = Array.from(document.querySelectorAll('.file-message'));
+		const message = messages.find(element => {
+			const fileName = element.querySelector('.file-name');
+			return fileName && (fileName.textContent || '').includes(fileNameToFind)
+		});
+		if (!message) return null;
+		const status = message.querySelector('.file-status');
+		const progressContainer = message.querySelector('.file-progress-container');
+		const progress = message.querySelector('.file-progress');
+		const downloadButton = message.querySelector('.file-download-btn');
+		return {
+			state: message.getAttribute('data-file-state') || '',
+			statusText: status ? (status.textContent || '').trim() : '',
+			progressWidth: progress ? progress.style.width : '',
+			progressVisible: progressContainer ? getComputedStyle(progressContainer).display !== 'none' : false,
+			downloadVisible: downloadButton ? getComputedStyle(downloadButton).display !== 'none' : false,
+		}
+	}, expectedName);
+}
+
+async function waitForFileUiState(page, expectedName, expectedState, timeoutMs = 15000) {
+	try {
+		await page.waitForFunction(({ fileNameToFind, stateToFind }) => {
+			const messages = Array.from(document.querySelectorAll('.file-message'));
+			return messages.some(element => {
+				const fileName = element.querySelector('.file-name');
+				return fileName &&
+					(fileName.textContent || '').includes(fileNameToFind) &&
+					(element.getAttribute('data-file-state') || '') === stateToFind
+			})
+		}, { fileNameToFind: expectedName, stateToFind: expectedState }, { timeout: timeoutMs });
+		return true
+	} catch {
+		return false
+	}
+}
+
+async function closeLatestSmokeSocket(page) {
+	return page.evaluate(() => {
+		const sockets = window.__nodecryptSmokeSockets || [];
+		const openSocket = sockets.slice().reverse().find(socket => socket && socket.readyState === WebSocket.OPEN);
+		if (!openSocket) {
+			return { closed: false, count: sockets.length, readyState: null }
+		}
+		openSocket.close();
+		return { closed: true, count: sockets.length, readyState: openSocket.readyState }
+	});
+}
+
+async function waitForLatestSmokeSocketOpen(page, minCount, timeoutMs = 20000) {
+	try {
+		await page.waitForFunction((expectedCount) => {
+			const sockets = window.__nodecryptSmokeSockets || [];
+			const latest = sockets[sockets.length - 1];
+			return sockets.length >= expectedCount && latest && latest.readyState === WebSocket.OPEN
+		}, minCount, { timeout: timeoutMs });
+		return true
+	} catch {
+		return false
+	}
+}
+
 async function waitForDroppedChunkCount(page, expectedCount, timeoutMs = 15000) {
 	try {
 		await page.waitForFunction((count) => {
@@ -319,7 +399,7 @@ async function delayIncomingFileCompleteAfterDroppingChunks(page, expectedName, 
 				window.__nodecryptSmokeDropFileId = message.fileId;
 			}
 			if (message && message.type === 'file_complete' && message.fileId === window.__nodecryptSmokeDropFileId) {
-				if (!window.__nodecryptSmokeDelayedFileComplete) {
+				if (!window.__nodecryptSmokeDelayedFileComplete && window.__nodecryptSmokeDroppedFileVolumes.length === 0) {
 					const transfer = window.fileTransfers && window.fileTransfers.get(message.fileId);
 					if (transfer && transfer.receivedVolumes) {
 						for (const volumeIndexToDrop of volumeIndicesToDrop) {
@@ -521,7 +601,10 @@ async function runSmoke() {
 		const aliceExpiredLargeFileSent = await waitForFileTransferCompleted(alice, expiredLargeFileName);
 		const expiredSenderWindow = await expireSenderRepairWindow(alice, expiredLargeFileName);
 		const releasedExpiredFileComplete = await releaseDelayedFileComplete(bob);
-		await bob.waitForTimeout(5000);
+		const bobExpiredRepairWaitingUi = await waitForFileUiState(bob, expiredLargeFileName, 'repair-waiting', 8000);
+		const bobExpiredRepairWaitingUiState = await getFileUiState(bob, expiredLargeFileName);
+		const bobExpiredRepairFailedUi = await waitForFileUiState(bob, expiredLargeFileName, 'repair-failed', 10000);
+		const bobExpiredRepairFailedUiState = await getFileUiState(bob, expiredLargeFileName);
 		const bobExpiredLargeTransferState = await getTransferState(bob, expiredLargeFileName);
 		const aliceExpiredLargeTransferState = await getTransferState(alice, expiredLargeFileName);
 		await restoreIncomingFileChunkDropper(bob);
@@ -532,11 +615,46 @@ async function runSmoke() {
 			aliceExpiredLargeFileSent &&
 			expiredSenderWindow &&
 			releasedExpiredFileComplete &&
+			bobExpiredRepairWaitingUi &&
+			bobExpiredRepairFailedUi &&
 			bobExpiredLargeTransferState &&
 			bobExpiredLargeTransferState.status !== 'completed' &&
 			bobExpiredLargeTransferState.nackRequests > 0 &&
+			bobExpiredLargeTransferState.repairStatus === 'failed' &&
 			aliceExpiredLargeTransferState &&
 			aliceExpiredLargeTransferState.resentVolumes === 0
+		);
+
+		await delayIncomingFileCompleteAfterDroppingChunks(bob, reconnectLargeFileName, reconnectLargeFileDropIndices);
+		await sendLargeFile(alice, reconnectLargeFileName, reconnectLargeFilePath, 69);
+		const bobHasReconnectLargeFile = await waitForChatText(bob, reconnectLargeFileName, 15000);
+		const bobDroppedReconnectLargeFileChunks = await waitForDroppedChunkCount(bob, reconnectLargeFileDropIndices.length);
+		const delayedReconnectFileComplete = await waitForDelayedFileComplete(bob);
+		const reconnectSocketClose = await closeLatestSmokeSocket(bob);
+		const releasedReconnectFileCompleteWhileClosed = await releaseDelayedFileComplete(bob);
+		await bob.waitForTimeout(500);
+		const bobReconnectUiStateAfterClosedRequest = await getFileUiState(bob, reconnectLargeFileName);
+		const bobReconnectSocketReopened = await waitForLatestSmokeSocketOpen(bob, reconnectSocketClose.count + 1, 25000);
+		const bobHasCompletedReconnectLargeFile = await waitForFileTransferCompleted(bob, reconnectLargeFileName, 60000);
+		const bobReconnectUiRepaired = await waitForFileUiState(bob, reconnectLargeFileName, 'repaired', 10000);
+		const bobReconnectUiState = await getFileUiState(bob, reconnectLargeFileName);
+		const bobReconnectTransferState = await getTransferState(bob, reconnectLargeFileName);
+		const aliceReconnectTransferState = await getTransferState(alice, reconnectLargeFileName);
+		await restoreIncomingFileChunkDropper(bob);
+		const bobReconnectRepairCompleted = Boolean(
+			bobHasReconnectLargeFile &&
+			bobDroppedReconnectLargeFileChunks &&
+			delayedReconnectFileComplete &&
+			reconnectSocketClose.closed &&
+			releasedReconnectFileCompleteWhileClosed &&
+			bobReconnectSocketReopened &&
+			bobHasCompletedReconnectLargeFile &&
+			bobReconnectUiRepaired &&
+			bobReconnectTransferState &&
+			bobReconnectTransferState.status === 'completed' &&
+			bobReconnectTransferState.nackRequests > 1 &&
+			aliceReconnectTransferState &&
+			aliceReconnectTransferState.resentVolumes >= reconnectLargeFileDropIndices.length
 		);
 
 		const bobText = await chatText(bob);
@@ -570,7 +688,7 @@ async function runSmoke() {
 		await charlieContext.close();
 
 		const result = {
-			ok: bobHasHistory && bobHasLoadedNotice && bobHasLiveFile && bobHasLargeFile && bobHasCompletedLargeFile && bobNackRepairedLargeFile && bobNackRepairedPrivateLargeFile && publicResendWasSinglecast && expiredRepairWindowRejected && bobHasLiveMessage && eveIsIsolated && !charlieHasOldMessage,
+			ok: bobHasHistory && bobHasLoadedNotice && bobHasLiveFile && bobHasLargeFile && bobHasCompletedLargeFile && bobNackRepairedLargeFile && bobNackRepairedPrivateLargeFile && publicResendWasSinglecast && expiredRepairWindowRejected && bobReconnectRepairCompleted && bobHasLiveMessage && eveIsIsolated && !charlieHasOldMessage,
 			roomName,
 			message,
 			liveMessage,
@@ -609,9 +727,27 @@ async function runSmoke() {
 			aliceExpiredLargeFileSent,
 			expiredSenderWindow,
 			releasedExpiredFileComplete,
+			bobExpiredRepairWaitingUi,
+			bobExpiredRepairWaitingUiState,
+			bobExpiredRepairFailedUi,
+			bobExpiredRepairFailedUiState,
 			expiredRepairWindowRejected,
 			bobExpiredLargeTransferState,
 			aliceExpiredLargeTransferState,
+			reconnectLargeFileDropIndices,
+			bobHasReconnectLargeFile,
+			bobDroppedReconnectLargeFileChunks,
+			delayedReconnectFileComplete,
+			reconnectSocketClose,
+			releasedReconnectFileCompleteWhileClosed,
+			bobReconnectUiStateAfterClosedRequest,
+			bobReconnectSocketReopened,
+			bobHasCompletedReconnectLargeFile,
+			bobReconnectUiRepaired,
+			bobReconnectRepairCompleted,
+			bobReconnectTransferState,
+			aliceReconnectTransferState,
+			bobReconnectUiState,
 			bobHasLiveMessage,
 			eveIsIsolated,
 			charlieHasOldMessage,

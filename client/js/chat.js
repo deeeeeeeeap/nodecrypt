@@ -21,7 +21,8 @@ import {
 	removeClass
 } from './util.dom.js';
 import {
-	formatFileSize
+	formatFileSize,
+	getFileTransferPresentation
 } from './util.file.js';
 import {
 	t
@@ -264,7 +265,7 @@ export function updateChatInputStyle() {
 	if (!chatInputArea || !placeholder || !inputMessageInput) return;	if (rd && rd.privateChatTargetId) {
 		addClass(chatInputArea, 'private-mode');
 		addClass(inputMessageInput, 'private-mode');
-		placeholder.textContent = `${t('ui.private_message_to', 'Private Message to')} ${escapeHTML(rd.privateChatTargetName)}`
+		placeholder.textContent = `${t('ui.private_message_to', 'Private Message to')} ${rd.privateChatTargetName}`
 	} else {
 		removeClass(chatInputArea, 'private-mode');
 		removeClass(inputMessageInput, 'private-mode');
@@ -398,39 +399,21 @@ function renderFileMessage(fileData, isSender) {
 	const safeFileId = escapeHTML(fileId || '');
 
 	// Check actual file transfer status
-	const transfer = window.fileTransfers ? window.fileTransfers.get(fileId) : null;
-	let statusText = '';
-	let progressWidth = '0%';
-	let downloadBtnStyle = 'display: none;';
-	let showProgress = false;
+	const presentation = getFileTransferPresentation(fileId, isSender);
+	const statusText = presentation.statusText === 'File data is not available. Ask the sender to resend it.' ?
+		t('system.file_unavailable', 'File data is not available. Ask the sender to resend it.') :
+		presentation.statusText;
+	const safeStatusText = escapeHTML(statusText);
+	const progressWidth = presentation.progressWidth;
+	const downloadBtnStyle = presentation.showDownload ? 'display: flex;' : 'display: none;';
+	const showProgress = presentation.showProgress;
+	const safeState = escapeHTML(presentation.state || '');
 	
-	if (transfer) {
-		if (transfer.status === 'sending') {
-			const progress = (transfer.sentVolumes / transfer.totalVolumes) * 100;
-			progressWidth = `${progress}%`;
-			statusText = `Sending ${transfer.sentVolumes}/${transfer.totalVolumes}`;
-			showProgress = true;
-		} else if (transfer.status === 'receiving') {
-			const progress = (transfer.receivedVolumes.size / transfer.totalVolumes) * 100;
-			progressWidth = `${progress}%`;
-			statusText = `Receiving ${transfer.receivedVolumes.size}/${transfer.totalVolumes}`;
-			showProgress = true;
-		} else if (transfer.status === 'completed') {
-			// 完成时不显示任何状态，只显示下载按钮
-			downloadBtnStyle = isSender ? 'display: none;' : 'display: flex;';
-		}	} else if (isSender) {
-		// 发送方历史消息，不显示状态和下载按钮
-		downloadBtnStyle = 'display: none;';
-	} else {
-		// 接收方历史消息，直接显示下载按钮（带动画效果）
-		statusText = t('system.file_unavailable', 'File data is not available. Ask the sender to resend it.');
-		showProgress = true;
-	}
 	// Different icon for archives vs single files
 	const fileIcon = isArchive ? '📦' : '📄';
 
 	return `
-		<div class="file-message" data-file-id="${safeFileId}">
+		<div class="file-message file-state-${safeState}" data-file-id="${safeFileId}" data-file-state="${safeState}">
 			<div class="file-main-content">
 				<div class="file-info">
 					<div class="file-icon">${fileIcon}</div>
@@ -447,7 +430,7 @@ function renderFileMessage(fileData, isSender) {
 				<div class="file-progress-bar">
 					<div class="file-progress" style="width: ${progressWidth}"></div>
 				</div>
-				<div class="file-status">${statusText}</div>
+				<div class="file-status">${safeStatusText}</div>
 			</div>` : ''}
 		</div>
 	`;

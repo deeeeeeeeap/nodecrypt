@@ -19,6 +19,7 @@ const RESUMABLE_TRANSFER_TTL_MS = 10 * 60 * 1000;
 const MAX_NACK_RANGES = 64;
 const MAX_NACK_CHUNKS_PER_REQUEST = 256;
 const MISSING_CHUNK_NACK_DELAY_MS = 3000;
+const REPAIR_RESPONSE_TIMEOUT_MS = 6000;
 const FAST_DEFLATE_LEVEL = 3;
 const PUBLIC_PAYLOAD_SAFETY_FACTOR = 3;
 const FILE_ID_PATTERN = /^file_[a-f0-9-]{16,80}$/i;
@@ -30,6 +31,58 @@ const DIRECT_TRANSFER_EXTENSIONS = new Set([
 // File transfer state management
 // 文件传输状态管理
 window.fileTransfers = new Map();
+
+function getRepairStatusText(transfer) {
+	if (!transfer) return '';
+	if (transfer.status === 'completed') {
+		return transfer.nackState && transfer.nackState.requestSeq > 0 ?
+			'Repaired' :
+			'Completed'
+	}
+	if (transfer.repairStatus === 'failed') return 'Repair failed';
+	if (transfer.repairStatus === 'waiting' || transfer.repairStatus === 'requesting') return 'Waiting for repair';
+	if (transfer.status === 'sending') return `Sending ${transfer.sentVolumes || 0}/${transfer.totalVolumes || 0}`;
+	if (transfer.status === 'receiving') {
+		const receivedCount = transfer.receivedVolumes ? transfer.receivedVolumes.size : 0;
+		return `Receiving ${receivedCount}/${transfer.totalVolumes || 0}`
+	}
+	return ''
+}
+
+export function getFileTransferPresentation(fileId, isSender = false) {
+	const transfer = window.fileTransfers ? window.fileTransfers.get(fileId) : null;
+	if (!transfer) {
+		return {
+			transfer,
+			statusText: isSender ? '' : 'File data is not available. Ask the sender to resend it.',
+			progressWidth: '0%',
+			showProgress: !isSender,
+			showDownload: false,
+			state: isSender ? 'sender-unavailable' : 'unavailable'
+		}
+	}
+
+	const totalVolumes = transfer.totalVolumes || 0;
+	const sentVolumes = transfer.sentVolumes || 0;
+	const receivedVolumes = transfer.receivedVolumes ? transfer.receivedVolumes.size : 0;
+	const progressCount = transfer.direction === 'send' ? sentVolumes : receivedVolumes;
+	const progress = totalVolumes > 0 ? Math.min(100, Math.max(0, (progressCount / totalVolumes) * 100)) : 0;
+	const repairState = transfer.repairStatus || '';
+	const wasRepaired = repairState === 'completed' && Boolean(transfer.nackState && transfer.nackState.requestSeq > 0);
+	let state = transfer.status || '';
+	if (repairState === 'failed') state = 'repair-failed';
+	else if (repairState === 'waiting' || repairState === 'requesting') state = 'repair-waiting';
+	else if (transfer.status === 'completed' && wasRepaired) state = 'repaired';
+
+	return {
+		transfer,
+		statusText: getRepairStatusText(transfer),
+		progressWidth: `${progress}%`,
+		showProgress: transfer.status !== 'completed' || wasRepaired || repairState === 'failed',
+		showDownload: transfer.status === 'completed' && transfer.direction !== 'send',
+		state
+	}
+}
 
 // Base64 encoding for binary data (more efficient than hex)
 // Base64编码用于二进制数据（比十六进制更高效）
@@ -666,6 +719,7 @@ async function sendSingleFileTransfer(file, onSend, updateProgress, volumeSize, 
 			scope: transferContext.scope || 'public',
 			roomIndex: transferContext.roomIndex,
 			targetClientId: transferContext.targetClientId || null,
+			targetClientName: transferContext.targetClientName || null,
 			originalSize: file.size,
 			compressedSize: file.size,
 			totalVolumes,
@@ -712,6 +766,7 @@ async function sendSingleFileTransfer(file, onSend, updateProgress, volumeSize, 
 		scope: transferContext.scope || 'public',
 		roomIndex: transferContext.roomIndex,
 		targetClientId: transferContext.targetClientId || null,
+		targetClientName: transferContext.targetClientName || null,
 		originalSize,
 		compressedSize,
 		totalVolumes: volumes.length,
@@ -801,6 +856,7 @@ async function handleFilesUpload(files, onSend, options = {}) {
 				scope: transferContext.scope || 'public',
 				roomIndex: transferContext.roomIndex,
 				targetClientId: transferContext.targetClientId || null,
+				targetClientName: transferContext.targetClientName || null,
 				originalSize,
 				compressedSize,
 				totalVolumes: volumes.length,
@@ -914,66 +970,27 @@ function updateFileProgress(fileId) {
 		const progressBar = element.querySelector('.file-progress');
 		const statusText = element.querySelector('.file-status');
 		const downloadBtn = element.querySelector('.file-download-btn');
-		
-		// 判断是否为发送方（发送方没有volumeData）
-		const isSender = !transfer.volumeData || transfer.volumeData.length === 0;
-		
-		if (transfer.status === 'sending') {
-			const progress = (transfer.sentVolumes / transfer.totalVolumes) * 100;
-			if (progressContainer) {
-				progressContainer.style.display = 'block';
-				progressContainer.classList.remove('fade-out');
-			}
-			if (progressBar) progressBar.style.width = `${progress}%`;
-			if (statusText) statusText.textContent = `Sending ${transfer.sentVolumes}/${transfer.totalVolumes}`;
-			if (downloadBtn) {
+		const transferIsSender = transfer.direction === 'send';
+		const presentation = getFileTransferPresentation(fileId, transferIsSender);
+		element.setAttribute('data-file-state', presentation.state || '');
+		element.className = element.className.replace(/\bfile-state-[^\s]+/g, '').trim();
+		if (presentation.state) {
+			element.classList.add(`file-state-${presentation.state}`)
+		}
+		if (progressContainer) {
+			progressContainer.style.display = presentation.showProgress ? 'block' : 'none';
+			progressContainer.classList.remove('fade-out')
+		}
+		if (progressBar) progressBar.style.width = presentation.progressWidth;
+		if (statusText) statusText.textContent = presentation.statusText;
+		if (downloadBtn) {
+			if (presentation.showDownload) {
+				downloadBtn.style.display = 'flex';
+				downloadBtn.classList.add('show');
+				downloadBtn.disabled = false
+			} else {
 				downloadBtn.classList.remove('show', 'animate-in');
-				downloadBtn.style.display = 'none';
-			}
-		} else if (transfer.status === 'receiving') {
-			const progress = (transfer.receivedVolumes.size / transfer.totalVolumes) * 100;
-			if (progressContainer) {
-				progressContainer.style.display = 'block';
-				progressContainer.classList.remove('fade-out');
-			}
-			if (progressBar) progressBar.style.width = `${progress}%`;
-			if (statusText) statusText.textContent = `Receiving ${transfer.receivedVolumes.size}/${transfer.totalVolumes}`;
-			if (downloadBtn) {
-				downloadBtn.classList.remove('show', 'animate-in');
-				downloadBtn.style.display = 'none';
-			}
-		} else if (transfer.status === 'completed') {
-			// 传输完成时的动画序列
-			if (progressContainer) {
-				// 先添加淡出动画类
-				progressContainer.classList.add('fade-out');
-				// 延迟后完全隐藏
-				setTimeout(() => {
-					progressContainer.style.display = 'none';
-				}, 400);
-			}
-			
-			if (downloadBtn) {
-				// 只有接收方才显示下载按钮
-				if (isSender) {
-					downloadBtn.classList.remove('show', 'animate-in');
-					downloadBtn.style.display = 'none';
-				} else {
-					// 延迟显示下载按钮，等进度条消失动画完成
-					setTimeout(() => {
-						downloadBtn.style.display = 'flex';
-						downloadBtn.classList.add('show');
-						downloadBtn.disabled = false;
-						// 添加进入动画
-						setTimeout(() => {
-							downloadBtn.classList.add('animate-in');
-						}, 50);
-						// 清理动画类
-						setTimeout(() => {
-							downloadBtn.classList.remove('animate-in');
-						}, 550);
-					}, 200);
-				}
+				downloadBtn.style.display = 'none'
 			}
 		}
 	});
@@ -1081,6 +1098,7 @@ function handleFileVolume(message, options = {}) {
 	transfer.receivedVolumes.add(volumeIndex);
 	transfer.volumeData[volumeIndex] = volumeData;
 	transfer.lastActivityAt = Date.now();
+	refreshRepairFailureCheckOnVolume(transfer, message);
 	if (volumeIndex > 0 && transfer.compression === 'none') {
 		const missingBeforeThisVolume = getMissingRanges(transfer, MAX_NACK_RANGES, MAX_NACK_CHUNKS_PER_REQUEST, volumeIndex - 1);
 		if (missingBeforeThisVolume.length > 0) {
@@ -1120,6 +1138,10 @@ function completeFileTransferIfReady(transfer) {
 			clearTimeout(transfer.repairTimer);
 			transfer.repairTimer = null
 		}
+		if (transfer.repairFailureTimer) {
+			clearTimeout(transfer.repairFailureTimer);
+			transfer.repairFailureTimer = null
+		}
 		scheduleCompletedTransferCleanup(transfer.fileId)
 		return true
 	}
@@ -1140,6 +1162,42 @@ function scheduleMissingChunkCheck(transfer, options = {}) {
 	}, MISSING_CHUNK_NACK_DELAY_MS)
 }
 
+function refreshRepairFailureCheckOnVolume(transfer, message) {
+	if (!transfer || transfer.status === 'completed' || !transfer.nackState || !transfer.nackState.requestSeq) {
+		return
+	}
+	const repairHasProgress = message && message.resent === true;
+	const repairIsActive = transfer.repairStatus === 'requesting' ||
+		transfer.repairStatus === 'waiting' ||
+		transfer.repairStatus === 'failed';
+	if (!repairHasProgress && !repairIsActive) {
+		return
+	}
+	if (transfer.repairStatus === 'failed') {
+		transfer.repairStatus = 'waiting'
+	}
+	scheduleRepairFailureCheck(transfer, transfer.nackState.requestSeq)
+}
+
+function scheduleRepairFailureCheck(transfer, requestSeq) {
+	if (!transfer || transfer.direction !== 'receive') return;
+	if (transfer.repairFailureTimer) {
+		clearTimeout(transfer.repairFailureTimer)
+	}
+	transfer.repairFailureTimer = setTimeout(() => {
+		transfer.repairFailureTimer = null;
+		if (
+			transfer.status !== 'completed' &&
+			transfer.nackState &&
+			transfer.nackState.requestSeq === requestSeq &&
+			(transfer.repairStatus === 'waiting' || transfer.repairStatus === 'requesting')
+		) {
+			transfer.repairStatus = 'failed';
+			updateFileProgress(transfer.fileId)
+		}
+	}, REPAIR_RESPONSE_TIMEOUT_MS)
+}
+
 // Ask the original sender to privately resend missing direct-transfer chunks.
 function requestMissingFileVolumes(transfer, reason, options = {}, requestedRanges = null) {
 	if (!transfer || transfer.direction !== 'receive' || transfer.compression !== 'none') {
@@ -1147,6 +1205,7 @@ function requestMissingFileVolumes(transfer, reason, options = {}, requestedRang
 	}
 	if (!transfer.senderClientId || typeof options.sendClientMessage !== 'function') {
 		transfer.repairStatus = 'failed';
+		updateFileProgress(transfer.fileId);
 		return
 	}
 
@@ -1159,15 +1218,17 @@ function requestMissingFileVolumes(transfer, reason, options = {}, requestedRang
 		transfer.nackState = { requestSeq: 0, lastRequestedAt: 0 }
 	}
 	const missingKey = JSON.stringify(missingRanges);
-	if (transfer.nackState.lastMissingKey === missingKey && Date.now() - transfer.nackState.lastRequestedAt < MISSING_CHUNK_NACK_DELAY_MS) {
+	if (!options.forceRepairRequest && transfer.nackState.lastMissingKey === missingKey && Date.now() - transfer.nackState.lastRequestedAt < MISSING_CHUNK_NACK_DELAY_MS) {
 		return
 	}
 	transfer.nackState.requestSeq += 1;
 	transfer.nackState.lastRequestedAt = Date.now();
 	transfer.nackState.lastMissingKey = missingKey;
 	transfer.repairStatus = 'requesting';
+	updateFileProgress(transfer.fileId);
 
 	try {
+		const requestSeq = transfer.nackState.requestSeq;
 		const sendResult = options.sendClientMessage(transfer.senderClientId, 'file_nack', {
 			type: 'file_nack',
 			fileId: transfer.fileId,
@@ -1181,15 +1242,43 @@ function requestMissingFileVolumes(transfer, reason, options = {}, requestedRang
 		});
 		Promise.resolve(sendResult)
 			.then((sent) => {
-				transfer.repairStatus = sent ? 'waiting' : 'failed'
+				transfer.repairStatus = sent ? 'waiting' : 'failed';
+				updateFileProgress(transfer.fileId);
+				if (sent) {
+					scheduleRepairFailureCheck(transfer, requestSeq)
+				}
 			})
 			.catch((error) => {
 				transfer.repairStatus = 'failed';
+				updateFileProgress(transfer.fileId);
 				console.error('File NACK request failed:', error)
 			})
 	} catch (error) {
 		transfer.repairStatus = 'failed';
+		updateFileProgress(transfer.fileId);
 		console.error('File NACK request failed:', error)
+	}
+}
+
+export function resumePendingFileRepairs(options = {}) {
+	const { roomIndex, clientId, userName } = options;
+	if (!clientId || !userName || !window.fileTransfers) return;
+	for (const transfer of window.fileTransfers.values()) {
+		if (!transfer || (roomIndex !== undefined && transfer.roomIndex !== undefined && transfer.roomIndex !== roomIndex)) {
+			continue
+		}
+		if (transfer.direction === 'receive' && transfer.senderUserName === userName) {
+			transfer.senderClientId = clientId;
+			if (transfer.status !== 'completed' && transfer.compression === 'none' && getMissingRanges(transfer).length > 0) {
+				requestMissingFileVolumes(transfer, 'reconnect', {
+					...options,
+					forceRepairRequest: true
+				})
+			}
+		}
+		if (transfer.direction === 'send' && transfer.scope === 'private' && transfer.targetClientName === userName) {
+			transfer.targetClientId = clientId
+		}
 	}
 }
 
@@ -1209,7 +1298,11 @@ async function handleFileNack(message, options = {}) {
 		return
 	}
 	if (transfer.scope === 'private' && transfer.targetClientId && transfer.targetClientId !== requesterClientId) {
-		return
+		if (transfer.targetClientName && options.senderUserName === transfer.targetClientName) {
+			transfer.targetClientId = requesterClientId
+		} else {
+			return
+		}
 	}
 	if (message.totalVolumes !== undefined && message.totalVolumes !== transfer.totalVolumes) {
 		return

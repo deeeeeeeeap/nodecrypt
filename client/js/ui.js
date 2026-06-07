@@ -333,7 +333,7 @@ export function createUserItem(user, isMe) {
 		avatarEl.innerHTML = cleanSvg
 	}
 	if (!isMe) {
-		div.onclick = () => togglePrivateChat(user.clientId, safeUserName)
+		div.onclick = () => togglePrivateChat(user.clientId, rawName)
 	}
 	return div
 }

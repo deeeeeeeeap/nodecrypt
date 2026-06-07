@@ -334,7 +334,8 @@ window.addEventListener('DOMContentLoaded', () => {
 			return {
 				roomIndex: activeRoomIndex,
 				scope: rd && rd.privateChatTargetId ? 'private' : 'public',
-				targetClientId: rd ? rd.privateChatTargetId : null
+				targetClientId: rd ? rd.privateChatTargetId : null,
+				targetClientName: rd ? rd.privateChatTargetName : null
 			}
 		},
 		onSend: async (message) => {

@@ -1305,6 +1305,29 @@ body.login-page {
 	box-sizing: border-box;
 }
 
+.file-message.file-state-repair-waiting .file-status {
+	background: rgba(255, 152, 0, 0.12);
+	color: #9a5a00;
+}
+
+.file-message.file-state-repair-waiting .file-progress {
+	background: linear-gradient(90deg, #ff9800, #ffb74d, #ffd180);
+}
+
+.file-message.file-state-repair-failed .file-status {
+	background: rgba(244, 67, 54, 0.12);
+	color: #b71c1c;
+}
+
+.file-message.file-state-repair-failed .file-progress {
+	background: linear-gradient(90deg, #f44336, #ef5350, #ff8a80);
+}
+
+.file-message.file-state-repaired .file-status {
+	background: rgba(76, 175, 80, 0.12);
+	color: #1b5e20;
+}
+
 .bubble.private-message .file-meta,
 .bubble.private-message .file-name{
     color:#ffffff !important;
