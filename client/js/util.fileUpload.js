@@ -9,8 +9,9 @@ import {
 	addClass,
 	removeClass
 } from './util.dom.js';
-import { formatFileSize } from './util.file.js';
+import { formatFileSize, validateSelectedFiles } from './util.file.js';
 import { t } from './util.i18n.js';
+import { escapeHTML } from './util.string.js';
 
 // File upload modal state
 // 文件上传模态框状态
@@ -100,7 +101,8 @@ function updateModalTexts() {
 	
 	// Update summary if files are selected
 	if (selectedFiles.size > 0) {
-		updateFileListDisplay();
+		updateFileList();
+		updateSendButton();
 	}
 }
 
@@ -141,6 +143,7 @@ function createUploadModal() {
 					</div>
 					<div class="file-list" id="file-list"></div>
 					<div class="file-list-summary" id="file-list-summary"></div>
+					<div class="file-list-error" id="file-list-error" role="alert"></div>
 				</div>
 			</div>
 			<div class="file-upload-footer">
@@ -295,6 +298,14 @@ function clearAllFiles() {
 	updateSendButton();
 }
 
+function getSelectedFilesArray() {
+	return Array.from(selectedFiles.values())
+}
+
+function getSelectionError() {
+	return validateSelectedFiles(getSelectedFilesArray())
+}
+
 // Update file list display
 // 更新文件列表显示
 function updateFileList() {
@@ -303,11 +314,16 @@ function updateFileList() {
 	const fileList = $('#file-list', uploadModal);
 	const fileListContainer = $('#file-list-container', uploadModal);
 	const fileListSummary = $('#file-list-summary', uploadModal);
+	const fileListError = $('#file-list-error', uploadModal);
 	const dropZone = $('#file-drop-zone', uploadModal);
 
 	if (selectedFiles.size === 0) {
 		fileListContainer.style.display = 'none';
 		dropZone.style.display = 'flex';
+		if (fileListError) {
+			fileListError.textContent = '';
+			fileListError.style.display = 'none'
+		}
 		return;
 	}
 
@@ -318,12 +334,13 @@ function updateFileList() {
 	fileList.innerHTML = '';
 	
 	for (const [fileId, file] of selectedFiles) {
+		const safeFileName = escapeHTML(file.name);
 		const fileItem = createElement('div', {
 			class: 'file-item',
 			'data-file-id': fileId
 		}, `
 			<div class="file-item-info">
-				<div class="file-item-name" title="${file.name}">${file.name}</div>
+				<div class="file-item-name" title="${safeFileName}">${safeFileName}</div>
 				<div class="file-item-size">${formatFileSize(file.size)}</div>
 			</div>
 			<button class="file-item-remove" type="button" data-file-id="${fileId}">&times;</button>
@@ -342,7 +359,12 @@ function updateFileList() {
 	const summaryText = t('file.files_selected', '{count} files selected, {size} total')
 		.replace('{count}', selectedFiles.size)
 		.replace('{size}', formatFileSize(totalSize));
-	fileListSummary.innerHTML = summaryText;
+	fileListSummary.textContent = summaryText;
+	const selectionError = getSelectionError();
+	if (fileListError) {
+		fileListError.textContent = selectionError;
+		fileListError.style.display = selectionError ? 'block' : 'none'
+	}
 }
 
 // Update send button state
@@ -351,7 +373,9 @@ function updateSendButton() {
 	if (!uploadModal) return;
 
 	const sendBtn = $('.file-upload-send-btn', uploadModal);
-	sendBtn.disabled = selectedFiles.size === 0;
+	if (sendBtn) {
+		sendBtn.disabled = selectedFiles.size === 0 || Boolean(getSelectionError())
+	}
 }
 
 // Handle send files
@@ -359,7 +383,15 @@ function updateSendButton() {
 async function handleSendFiles() {
 	if (selectedFiles.size === 0 || !onSendCallback) return;
 
-	const files = Array.from(selectedFiles.values());
+	const selectionError = getSelectionError();
+	if (selectionError) {
+		updateFileList();
+		updateSendButton();
+		return
+	}
+
+	const files = getSelectedFilesArray();
+	const sendCallback = onSendCallback;
 	const sendBtn = $('.file-upload-send-btn', uploadModal);
 	
 	try {
@@ -375,12 +407,16 @@ async function handleSendFiles() {
 		hideUploadModal();
 		
 		// Send files through callback
-		await onSendCallback(files);
+		await sendCallback(files);
 		
 	} catch (error) {
 		console.error('Error sending files:', error);
 		if (window.addSystemMsg) {
 			window.addSystemMsg(`${t('system.file_send_failed', 'Failed to send files:')} ${error.message}`);
+		}
+		if (uploadModal && sendBtn) {
+			sendBtn.disabled = false;
+			sendBtn.textContent = t('file.send_files', 'Send Files')
 		}
 	}
 }

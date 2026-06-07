@@ -31,6 +31,7 @@ const DIRECT_TRANSFER_EXTENSIONS = new Set([
 // File transfer state management
 // 文件传输状态管理
 window.fileTransfers = new Map();
+const fileProgressFrames = new Map();
 
 function getRepairStatusText(transfer) {
 	if (!transfer) return '';
@@ -505,7 +506,7 @@ export function setupFileSend({
 				const transferContext = typeof getTransferContext === 'function' ? (getTransferContext() || {}) : {};
 				await handleFilesUpload(files, async (msg) => {
 					// 合并 userName 字段
-					await onSend({ ...msg, userName });
+					await onSend({ ...msg, userName }, transferContext);
 				}, { recipientCount, transferContext });
 			});
 		});
@@ -591,6 +592,35 @@ function getMissingRanges(transfer, maxRanges = MAX_NACK_RANGES, maxChunks = MAX
 	return ranges
 }
 
+function advanceNextExpectedVolume(transfer) {
+	if (!transfer || !transfer.receivedVolumes || !isSafeIntegerInRange(transfer.totalVolumes, 1, MAX_FILE_VOLUMES)) {
+		return
+	}
+	let nextExpected = Number.isSafeInteger(transfer.nextExpectedVolume) ? transfer.nextExpectedVolume : 0;
+	while (
+		nextExpected < transfer.totalVolumes &&
+		transfer.receivedVolumes.has(nextExpected) &&
+		(!Array.isArray(transfer.volumeData) || typeof transfer.volumeData[nextExpected] === 'string')
+	) {
+		nextExpected += 1
+	}
+	transfer.nextExpectedVolume = nextExpected
+}
+
+function requestGapRepairIfNeeded(transfer, volumeIndex, options = {}) {
+	if (!transfer || transfer.compression !== 'none') {
+		return
+	}
+	const expected = Number.isSafeInteger(transfer.nextExpectedVolume) ? transfer.nextExpectedVolume : 0;
+	if (volumeIndex > expected) {
+		const missingBeforeThisVolume = getMissingRanges(transfer, MAX_NACK_RANGES, MAX_NACK_CHUNKS_PER_REQUEST, volumeIndex - 1);
+		if (missingBeforeThisVolume.length > 0) {
+			void requestMissingFileVolumes(transfer, 'gap', options, missingBeforeThisVolume)
+		}
+	}
+	advanceNextExpectedVolume(transfer)
+}
+
 function normalizeMissingRanges(ranges, totalVolumes) {
 	if (!Array.isArray(ranges) || !isSafeIntegerInRange(totalVolumes, 1, MAX_FILE_VOLUMES)) {
 		return []
@@ -636,7 +666,7 @@ function reportFileSendLimit(message) {
 	}
 }
 
-function validateSelectedFiles(files) {
+export function validateSelectedFiles(files) {
 	if (files.length > MAX_FILE_COUNT) {
 		return `Too many files selected. Maximum is ${MAX_FILE_COUNT}.`
 	}
@@ -961,7 +991,16 @@ async function sendVolumes(fileId, volumes, onSend, updateProgress, fileName) {
 
 // Update file progress in chat
 // 更新聊天中的文件进度
-function updateFileProgress(fileId) {
+function updateFileProgress(fileId, immediate = false) {
+	if (!immediate && typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+		if (fileProgressFrames.has(fileId)) return;
+		const frame = window.requestAnimationFrame(() => {
+			fileProgressFrames.delete(fileId);
+			updateFileProgress(fileId, true)
+		});
+		fileProgressFrames.set(fileId, frame);
+		return
+	}
 	const transfer = window.fileTransfers.get(fileId);
 	if (!transfer) return;
 	const elements = document.querySelectorAll(`[data-file-id="${fileId}"]`);
@@ -1039,6 +1078,7 @@ function handleFileStart(message, isPrivate, renderMessage = true, options = {})
 		compressedSize,
 		totalVolumes,
 		receivedVolumes: new Set(),
+		nextExpectedVolume: 0,
 		volumeData: new Array(totalVolumes),
 		status: 'receiving',
 		originalHash,
@@ -1099,12 +1139,7 @@ function handleFileVolume(message, options = {}) {
 	transfer.volumeData[volumeIndex] = volumeData;
 	transfer.lastActivityAt = Date.now();
 	refreshRepairFailureCheckOnVolume(transfer, message);
-	if (volumeIndex > 0 && transfer.compression === 'none') {
-		const missingBeforeThisVolume = getMissingRanges(transfer, MAX_NACK_RANGES, MAX_NACK_CHUNKS_PER_REQUEST, volumeIndex - 1);
-		if (missingBeforeThisVolume.length > 0) {
-			void requestMissingFileVolumes(transfer, 'gap', options, missingBeforeThisVolume)
-		}
-	}
+	requestGapRepairIfNeeded(transfer, volumeIndex, options);
 	completeFileTransferIfReady(transfer);
 	scheduleMissingChunkCheck(transfer, options);
 	
@@ -1119,9 +1154,8 @@ function handleFileComplete(message, options = {}) {
 	const transfer = window.fileTransfers.get(fileId);
 	
 	if (!transfer) return;
-	
-	// 检查是否所有分卷都已接收
 	const completed = completeFileTransferIfReady(transfer);
+
 	if (!completed) {
 		void requestMissingFileVolumes(transfer, 'complete_missing', options)
 	}

@@ -1592,6 +1592,18 @@ body.login-page {
 	text-align: center;
 }
 
+.file-list-error {
+	display: none;
+	margin-top: 8px;
+	padding: 10px 12px;
+	background: #fff5f5;
+	border: 1px solid rgba(220, 53, 69, 0.35);
+	border-radius: 6px;
+	color: #dc3545;
+	font-size: 13px;
+	line-height: 1.4;
+}
+
 .file-upload-footer {
 	display: flex;
 	justify-content: flex-end;

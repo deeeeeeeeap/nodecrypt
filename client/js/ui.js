@@ -143,11 +143,13 @@ function handleShareAction() {
 	const encryptedRoom = simpleEncrypt(roomName);
 	const encryptedPwd = password ? simpleEncrypt(password) : '';
 	
-	// Create share URL with encrypted data
-	let url = `${location.origin}${location.pathname}?r=${encodeURIComponent(encryptedRoom)}`;
+	// Keep share tokens in the fragment so they are not sent to the relay.
+	const params = new URLSearchParams();
+	params.set('r', encryptedRoom);
 	if (encryptedPwd) {
-		url += `&p=${encodeURIComponent(encryptedPwd)}`;
+		params.set('p', encryptedPwd);
 	}
+	const url = `${location.origin}${location.pathname}#${params.toString()}`;
 	
 	copyToClipboard(url, t('action.share_copied', 'Share link copied!'), t('action.copy_url_failed', 'Copy failed, url:'));
 }
@@ -563,7 +565,11 @@ export function setupTabs() {
 // Autofill room and password from URL
 // 从 URL 自动填充房间和密码
 export function autofillRoomPwd(formPrefix = '') {
-	const params = new URLSearchParams(window.location.search);
+	const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+	const queryParams = new URLSearchParams(window.location.search);
+	const params = (hashParams.has('r') || hashParams.has('p') || hashParams.has('node') || hashParams.has('pwd')) ?
+		hashParams :
+		queryParams;
 	
 	// Check for new encrypted format first
 	const encryptedRoom = params.get('r');
@@ -579,15 +585,15 @@ export function autofillRoomPwd(formPrefix = '') {
 	
 	if (encryptedRoom) {
 		// New encrypted format
-		roomValue = simpleDecrypt(decodeURIComponent(encryptedRoom));
+		roomValue = simpleDecrypt(encryptedRoom);
 		if (encryptedPwd) {
-			pwdValue = simpleDecrypt(decodeURIComponent(encryptedPwd));
+			pwdValue = simpleDecrypt(encryptedPwd);
 		}
 	} else if (plaintextRoom) {
 		// Old plaintext format - show security warning
-		roomValue = decodeURIComponent(plaintextRoom);
+		roomValue = plaintextRoom;
 		if (plaintextPwd) {
-			pwdValue = decodeURIComponent(plaintextPwd);
+			pwdValue = plaintextPwd;
 		}
 		isPlaintext = true;
 		
@@ -614,10 +620,8 @@ export function autofillRoomPwd(formPrefix = '') {
 			// Add visual indicator for no password and keep label floating
 			if (!pwdValue) {
 				pwdInput.placeholder = 'No password required';
-				// Add a space to make the input appear "filled" so the label stays floating
-				pwdInput.value = ' ';
-				// Make the text invisible but keep the label floating behavior
-				pwdInput.style.color = 'transparent';
+				pwdInput.dataset.noPassword = 'true';
+				pwdInput.classList.add('force-floating');
 			}
 		}
 	}

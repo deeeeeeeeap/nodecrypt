@@ -381,7 +381,7 @@ export class ChatRoom {  constructor(state, env) {
   }
   // Handle channel join requests
   handleJoinChannel(clientId, decrypted) {
-    if (!isString(decrypted.p) || this.clients[clientId].channel) {
+    if (!isString(decrypted.p) || !ROOM_HASH_PATTERN.test(decrypted.p) || this.clients[clientId].channel) {
       return;
     }
 

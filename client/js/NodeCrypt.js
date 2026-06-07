@@ -63,6 +63,7 @@ class NodeCrypt {
 			onServerTrustError: callbacks.onServerTrustError || null,
 			onClientSecured: callbacks.onClientSecured || null,
 			onClientList: callbacks.onClientList || null,
+			onClientLeft: callbacks.onClientLeft || null,
 			onClientMessage: callbacks.onClientMessage || null,
 			onHistoryMessages: callbacks.onHistoryMessages || null,
 		};
@@ -118,7 +119,8 @@ class NodeCrypt {
 				username: username,
 				roomHash: roomHash,
 				channel: sha256(`${roomHash}:${passwordHash}`),
-				password: passwordHash
+				password: passwordHash,
+				hasPassword: typeof password === 'string' && password.length > 0
 			};
 			this.historyKey = null
 		} catch (error) {
@@ -342,7 +344,7 @@ class NodeCrypt {
 					}
 				}
 				try {
-					this.callbacks.onClientList(clients)
+					this.callbacks.onClientList(clients, null, serverDecrypted.p.slice())
 				} catch (error) {
 					this.logEvent('onMessage-client-list-callback', error, 'error')
 				}
@@ -436,6 +438,7 @@ class NodeCrypt {
 	// WebSocket error event handler
 	// WebSocket 错误事件处理
 	async onError(event) {
+		if (event && event.target && event.target !== this.connection) return;
 		this.logEvent('onError', event, 'error');
 		this.disconnect();
 		if (this.credentials) {
@@ -453,6 +456,7 @@ class NodeCrypt {
 	// WebSocket close event handler
 	// WebSocket 关闭事件处理
 	async onClose(event) {
+		if (event && event.target && event.target !== this.connection) return;
 		this.logEvent('onClose', event);
 		this.disconnect();
 		if (this.credentials) {
@@ -683,6 +687,9 @@ class NodeCrypt {
 			return this.historyKey
 		}
 		if (!this.credentials) {
+			return null
+		}
+		if (!this.credentials.hasPassword) {
 			return null
 		}
 

@@ -62,6 +62,7 @@ export function getNewRoomData() {
 		messages: [],
 		prevUserList: [],
 		knownUserIds: new Set(),
+		rawUserIds: new Set(),
 		historyIds: new Set(),
 		unreadCount: 0,
 		privateChatTargetId: null,
@@ -174,7 +175,7 @@ export function joinRoom(userName, roomName, password, modal = null, onResult) {
 			addSystemMsg(t('system.secured', 'connection secured'))
 		},
 		onClientSecured: (user) => handleClientSecured(idx, user),
-		onClientList: (list, selfId) => handleClientList(idx, list, selfId),
+		onClientList: (list, selfId, rawClientIds) => handleClientList(idx, list, selfId, rawClientIds),
 		onClientLeft: (clientId) => handleClientLeft(idx, clientId),
 		onClientMessage: (msg) => handleClientMessage(idx, msg),
 		onHistoryMessages: (messages) => handleHistoryMessages(idx, messages)
@@ -195,16 +196,19 @@ export function joinRoom(userName, roomName, password, modal = null, onResult) {
 
 // Handle the client list update
 // 处理客户端列表更新
-export function handleClientList(idx, list, selfId) {
+export function handleClientList(idx, list, selfId, rawClientIds = null) {
 	const rd = roomsData[idx];
 	if (!rd) return;
 	const oldUserIds = new Set((rd.userList || []).map(u => u.clientId));
+	const previousAuthoritativeIds = rd.rawUserIds instanceof Set ? rd.rawUserIds : oldUserIds;
 	const newUserIds = new Set(list.map(u => u.clientId));
-	for (const oldId of oldUserIds) {
-		if (!newUserIds.has(oldId)) {
+	const authoritativeUserIds = Array.isArray(rawClientIds) ? new Set(rawClientIds) : newUserIds;
+	for (const oldId of previousAuthoritativeIds) {
+		if (!authoritativeUserIds.has(oldId)) {
 			handleClientLeft(idx, oldId)
 		}
 	}
+	rd.rawUserIds = authoritativeUserIds;
 	rd.userList = list;
 	rd.userMap = {};
 	list.forEach(u => {

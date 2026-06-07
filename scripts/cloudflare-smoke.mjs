@@ -2,9 +2,10 @@ import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { createServer } from 'node:net';
 import { chromium } from 'playwright';
 
-const baseUrl = process.env.SMOKE_BASE_URL || 'http://127.0.0.1:8787/';
+let baseUrl = process.env.SMOKE_BASE_URL || '';
 const shouldStartWrangler = !process.env.SMOKE_BASE_URL;
 const roomName = `smoke${Date.now().toString(36).slice(-8)}`;
 const password = 'pw123456';
@@ -68,14 +69,43 @@ async function waitForServer(url, timeoutMs = 60000) {
 	throw new Error(`Timed out waiting for ${url}`);
 }
 
-function startWrangler() {
+async function getAvailablePort() {
+	return new Promise((resolve, reject) => {
+		const server = createServer();
+		server.unref();
+		server.on('error', reject);
+		server.listen(0, '127.0.0.1', () => {
+			const address = server.address();
+			const port = address && typeof address === 'object' ? address.port : 0;
+			server.close(() => resolve(port))
+		})
+	})
+}
+
+async function waitForWrangler(child, url) {
+	let settled = false;
+	const exitPromise = new Promise((_, reject) => {
+		child.once('exit', (code, signal) => {
+			if (settled) return;
+			reject(new Error(`Wrangler exited before smoke server was ready: code=${code} signal=${signal || ''}`))
+		})
+	});
+	try {
+		await Promise.race([waitForServer(url), exitPromise])
+	} finally {
+		settled = true
+	}
+}
+
+function startWrangler(port) {
 	const command = process.platform === 'win32' ? 'cmd.exe' : 'npx';
 	const args = process.platform === 'win32' ?
-		['/d', '/s', '/c', 'npx wrangler dev --ip 127.0.0.1 --port 8787'] :
-		['wrangler', 'dev', '--ip', '127.0.0.1', '--port', '8787'];
+		['/d', '/s', '/c', `npx wrangler dev --ip 127.0.0.1 --port ${port}`] :
+		['wrangler', 'dev', '--ip', '127.0.0.1', '--port', String(port)];
 	const child = spawn(command, args, {
 		stdio: ['ignore', 'pipe', 'pipe'],
 		shell: false,
+		cwd: process.cwd(),
 	});
 
 	child.stdout.on('data', (chunk) => process.stdout.write(chunk));
@@ -479,8 +509,12 @@ async function runSmoke() {
 	let browser = null;
 	try {
 		if (shouldStartWrangler) {
-			wrangler = startWrangler();
-			await waitForServer(baseUrl);
+			const port = await getAvailablePort();
+			baseUrl = `http://127.0.0.1:${port}/`;
+			wrangler = startWrangler(port);
+			await waitForWrangler(wrangler, baseUrl);
+		} else {
+			baseUrl = process.env.SMOKE_BASE_URL;
 		}
 
 		const executablePath = findChromeExecutable();

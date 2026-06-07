@@ -103,6 +103,21 @@ window.setupEmojiPicker = setupEmojiPicker;
 window.handleFileMessage = handleFileMessage;
 window.downloadFile = downloadFile;
 
+function addFileSendEcho(roomIndex, message, msgType) {
+	if (roomIndex === activeRoomIndex) {
+		addMsg(message, false, msgType);
+		return
+	}
+	const rd = roomsData[roomIndex];
+	if (!rd) return;
+	rd.messages.push({
+		type: 'me',
+		text: message,
+		msgType,
+		timestamp: Date.now()
+	})
+}
+
 // 当 DOM 内容加载完成后执行初始化逻辑
 // Run initialization logic when the DOM content is fully loaded
 window.addEventListener('DOMContentLoaded', () => {
@@ -338,15 +353,19 @@ window.addEventListener('DOMContentLoaded', () => {
 				targetClientName: rd ? rd.privateChatTargetName : null
 			}
 		},
-		onSend: async (message) => {
-			const rd = roomsData[activeRoomIndex];
+		onSend: async (message, transferContext = {}) => {
+			const roomIndex = Number.isInteger(transferContext.roomIndex) ? transferContext.roomIndex : activeRoomIndex;
+			const rd = roomsData[roomIndex];
 			if (rd && rd.chat) {
-				const userName = rd.myUserName || '';
+				const userName = message.userName || rd.myUserName || '';
 				const msgWithUser = { ...message, userName };
-				if (rd.privateChatTargetId) {
+				const isPrivateTransfer = transferContext.scope === 'private';
+				const targetClientId = isPrivateTransfer ? transferContext.targetClientId : null;
+				const targetClientName = transferContext.targetClientName || rd.privateChatTargetName || 'selected user';
+				if (isPrivateTransfer) {
 					// 私聊文件加密并发送
 					// Encrypt and send private file message
-					const targetClient = rd.chat.channel[rd.privateChatTargetId];
+					const targetClient = targetClientId ? rd.chat.channel[targetClientId] : null;
 					if (targetClient && targetClient.shared) {
 						const clientMessagePayload = {
 							a: 'm',
@@ -357,7 +376,7 @@ window.addEventListener('DOMContentLoaded', () => {
 						const serverRelayPayload = {
 							a: 'c',
 							p: encryptedClientMessage,
-							c: rd.privateChatTargetId
+							c: targetClientId
 						};
 						const encryptedMessageForServer = rd.chat.encryptServerMessage(serverRelayPayload, rd.chat.serverShared);
 						if (typeof rd.chat.waitForWritable === 'function' && !(await rd.chat.waitForWritable())) {
@@ -369,10 +388,10 @@ window.addEventListener('DOMContentLoaded', () => {
 						
 						// 添加到自己的聊天记录
 						if (msgWithUser.type === 'file_start') {
-							addMsg(msgWithUser, false, 'file_private');
+							addFileSendEcho(roomIndex, msgWithUser, 'file_private');
 						}
 					} else {
-						throw new Error(`${t('system.private_file_failed', 'Cannot send private file to')} ${rd.privateChatTargetName}. ${t('system.user_not_connected', 'User might not be fully connected.')}`)
+						throw new Error(`${t('system.private_file_failed', 'Cannot send private file to')} ${targetClientName}. ${t('system.user_not_connected', 'User might not be fully connected.')}`)
 					}
 				} else {
 					// 公共频道文件发送
@@ -384,7 +403,7 @@ window.addEventListener('DOMContentLoaded', () => {
 					
 					// 添加到自己的聊天记录
 					if (msgWithUser.type === 'file_start') {
-						addMsg(msgWithUser, false, 'file');
+						addFileSendEcho(roomIndex, msgWithUser, 'file');
 					}
 				}
 			} else {
