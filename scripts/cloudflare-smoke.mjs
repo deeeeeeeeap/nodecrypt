@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -15,6 +15,23 @@ const fileName = `nodecrypt-smoke-${Date.now()}.txt`;
 const filePath = join(tmpdir(), fileName);
 const largeFileName = `nodecrypt-large-${Date.now()}.bin`;
 const largeFilePath = join(tmpdir(), largeFileName);
+const privateLargeFileName = `nodecrypt-private-large-${Date.now()}.bin`;
+const privateLargeFilePath = join(tmpdir(), privateLargeFileName);
+const multiReceiverLargeFileName = `nodecrypt-multi-large-${Date.now()}.bin`;
+const multiReceiverLargeFilePath = join(tmpdir(), multiReceiverLargeFileName);
+const expiredLargeFileName = `nodecrypt-expired-large-${Date.now()}.bin`;
+const expiredLargeFilePath = join(tmpdir(), expiredLargeFileName);
+const largeFileDropIndices = [3, 4, 8];
+const privateLargeFileDropIndices = [2, 5];
+const multiReceiverDropIndices = [6, 7];
+const expiredLargeFileDropIndices = [4];
+const tempFilePaths = [
+	filePath,
+	largeFilePath,
+	privateLargeFilePath,
+	multiReceiverLargeFilePath,
+	expiredLargeFilePath,
+];
 
 function findChromeExecutable() {
 	const candidates = [
@@ -65,7 +82,7 @@ function startWrangler() {
 function stopProcessTree(child) {
 	if (!child || child.killed) return;
 	if (process.platform === 'win32') {
-		spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { stdio: 'ignore' });
+		spawnSync('taskkill', ['/pid', String(child.pid), '/t', '/f'], { stdio: 'ignore' });
 		return;
 	}
 	child.kill('SIGTERM');
@@ -110,7 +127,7 @@ async function waitForChatText(page, expected, timeoutMs = 15000) {
 
 async function joinRoom(page, userName, roomPassword = password) {
 	page.on('dialog', (dialog) => dialog.accept());
-	await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+	await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
 	await page.waitForSelector('#userName', { timeout: 15000 });
 	await page.fill('#userName', userName);
 	await page.fill('#roomName', roomName);
@@ -143,14 +160,47 @@ async function sendFile(page) {
 	}
 }
 
-async function sendLargeFile(page) {
-	writeFileSync(largeFilePath, Buffer.alloc(9 * 1024 * 1024, 65));
+async function sendLargeFile(page, targetName = largeFileName, targetPath = largeFilePath, fill = 65) {
+	writeFileSync(targetPath, Buffer.alloc(9 * 1024 * 1024, fill));
 	await page.locator('.chat-attach-btn').click();
-	await page.setInputFiles('#file-upload-input', largeFilePath);
+	await page.setInputFiles('#file-upload-input', targetPath);
 	await page.locator('.file-upload-send-btn').click();
-	if (!(await waitForChatText(page, largeFileName, 15000))) {
-		throw new Error(`Sent large file did not render: ${largeFileName}`);
+	if (!(await waitForChatText(page, targetName, 15000))) {
+		throw new Error(`Sent large file did not render: ${targetName}`);
 	}
+}
+
+async function waitForMember(page, targetName, timeoutMs = 15000) {
+	try {
+		await page.waitForFunction((name) => {
+			return Array.from(document.querySelectorAll('#member-list .member:not(.me) .member-name'))
+				.some((element) => (element.textContent || '').includes(name));
+		}, targetName, { timeout: timeoutMs });
+		return true
+	} catch {
+		return false
+	}
+}
+
+async function isPrivateChatActive(page, targetName) {
+	return page.evaluate((name) => {
+		return Array.from(document.querySelectorAll('#member-list .member.private-chat-active .member-name'))
+			.some((element) => (element.textContent || '').includes(name));
+	}, targetName);
+}
+
+async function setPrivateChat(page, targetName, enabled) {
+	if (!(await waitForMember(page, targetName))) {
+		throw new Error(`Member did not appear for private chat: ${targetName}`);
+	}
+	const active = await isPrivateChatActive(page, targetName);
+	if (active === enabled) return;
+	await page.locator('#member-list .member:not(.me)').filter({ hasText: targetName }).first().click();
+	await page.waitForFunction(({ name, shouldBeActive }) => {
+		const activeNow = Array.from(document.querySelectorAll('#member-list .member.private-chat-active .member-name'))
+			.some((element) => (element.textContent || '').includes(name));
+		return activeNow === shouldBeActive
+	}, { name: targetName, shouldBeActive: enabled }, { timeout: 10000 });
 }
 
 async function waitForFileTransferCompleted(page, expectedName, timeoutMs = 45000) {
@@ -167,33 +217,160 @@ async function waitForFileTransferCompleted(page, expectedName, timeoutMs = 4500
 	}
 }
 
-async function dropOneIncomingLargeFileChunk(page, expectedName, volumeIndex = 3) {
-	await page.evaluate(({ fileNameToDrop, volumeIndexToDrop }) => {
+async function waitForDroppedChunkCount(page, expectedCount, timeoutMs = 15000) {
+	try {
+		await page.waitForFunction((count) => {
+			return Array.isArray(window.__nodecryptSmokeDroppedFileVolumes) &&
+				window.__nodecryptSmokeDroppedFileVolumes.length === count;
+		}, expectedCount, { timeout: timeoutMs });
+		return true
+	} catch {
+		return false
+	}
+}
+
+async function dropIncomingLargeFileChunks(page, expectedName, volumeIndices = [3]) {
+	await page.evaluate(({ fileNameToDrop, volumeIndicesToDrop }) => {
 		window.__nodecryptSmokeDropFileId = null;
-		window.__nodecryptSmokeDroppedFileVolume = false;
-		const originalHandleFileMessage = window.handleFileMessage;
+		window.__nodecryptSmokeDroppedFileVolumes = [];
+		if (!window.__nodecryptSmokeOriginalHandleFileMessage) {
+			window.__nodecryptSmokeOriginalHandleFileMessage = window.handleFileMessage;
+		}
+		const originalHandleFileMessage = window.__nodecryptSmokeOriginalHandleFileMessage;
 		window.handleFileMessage = function patchedHandleFileMessage(message, ...args) {
 			if (message && message.type === 'file_start' && message.fileName === fileNameToDrop) {
 				window.__nodecryptSmokeDropFileId = message.fileId;
 			}
 			if (message && message.type === 'file_complete' && message.fileId === window.__nodecryptSmokeDropFileId) {
-				if (!window.__nodecryptSmokeDroppedFileVolume) {
+				if (window.__nodecryptSmokeDroppedFileVolumes.length === 0) {
 					const transfer = window.fileTransfers && window.fileTransfers.get(message.fileId);
 					if (transfer && transfer.receivedVolumes) {
-						transfer.receivedVolumes.delete(volumeIndexToDrop);
-						if (Array.isArray(transfer.volumeData)) {
-							transfer.volumeData[volumeIndexToDrop] = undefined;
+						for (const volumeIndexToDrop of volumeIndicesToDrop) {
+							transfer.receivedVolumes.delete(volumeIndexToDrop);
+							if (Array.isArray(transfer.volumeData)) {
+								transfer.volumeData[volumeIndexToDrop] = undefined;
+							}
+							window.__nodecryptSmokeDroppedFileVolumes.push(volumeIndexToDrop);
 						}
 						if (transfer.status === 'completed') {
 							transfer.status = 'receiving';
 						}
 					}
-					window.__nodecryptSmokeDroppedFileVolume = true;
 				}
 			}
 			return originalHandleFileMessage.call(window, message, ...args)
 		}
-	}, { fileNameToDrop: expectedName, volumeIndexToDrop: volumeIndex });
+	}, { fileNameToDrop: expectedName, volumeIndicesToDrop: volumeIndices });
+}
+
+async function restoreIncomingFileChunkDropper(page) {
+	await page.evaluate(() => {
+		if (window.__nodecryptSmokeOriginalHandleFileMessage) {
+			window.handleFileMessage = window.__nodecryptSmokeOriginalHandleFileMessage;
+			delete window.__nodecryptSmokeOriginalHandleFileMessage;
+		}
+	});
+}
+
+async function trackResentFileMessages(page, expectedName) {
+	await page.evaluate((fileNameToTrack) => {
+		window.__nodecryptSmokeTrackFileId = null;
+		window.__nodecryptSmokeResentFileVolumes = 0;
+		window.__nodecryptSmokeResentFileCompletes = 0;
+		if (!window.__nodecryptSmokeOriginalHandleFileMessage) {
+			window.__nodecryptSmokeOriginalHandleFileMessage = window.handleFileMessage;
+		}
+		const originalHandleFileMessage = window.__nodecryptSmokeOriginalHandleFileMessage;
+		window.handleFileMessage = function patchedHandleFileMessage(message, ...args) {
+			if (message && message.type === 'file_start' && message.fileName === fileNameToTrack) {
+				window.__nodecryptSmokeTrackFileId = message.fileId;
+			}
+			if (message && message.fileId === window.__nodecryptSmokeTrackFileId && message.resent) {
+				if (message.type === 'file_volume') {
+					window.__nodecryptSmokeResentFileVolumes += 1;
+				}
+				if (message.type === 'file_complete') {
+					window.__nodecryptSmokeResentFileCompletes += 1;
+				}
+			}
+			return originalHandleFileMessage.call(window, message, ...args)
+		}
+	}, expectedName);
+}
+
+async function getResentFileMessageCounts(page) {
+	return page.evaluate(() => ({
+		resentVolumes: window.__nodecryptSmokeResentFileVolumes || 0,
+		resentCompletes: window.__nodecryptSmokeResentFileCompletes || 0,
+	}));
+}
+
+async function delayIncomingFileCompleteAfterDroppingChunks(page, expectedName, volumeIndices = [3]) {
+	await page.evaluate(({ fileNameToDrop, volumeIndicesToDrop }) => {
+		window.__nodecryptSmokeDropFileId = null;
+		window.__nodecryptSmokeDroppedFileVolumes = [];
+		window.__nodecryptSmokeDelayedFileComplete = null;
+		if (!window.__nodecryptSmokeOriginalHandleFileMessage) {
+			window.__nodecryptSmokeOriginalHandleFileMessage = window.handleFileMessage;
+		}
+		const originalHandleFileMessage = window.__nodecryptSmokeOriginalHandleFileMessage;
+		window.handleFileMessage = function patchedHandleFileMessage(message, ...args) {
+			if (message && message.type === 'file_start' && message.fileName === fileNameToDrop) {
+				window.__nodecryptSmokeDropFileId = message.fileId;
+			}
+			if (message && message.type === 'file_complete' && message.fileId === window.__nodecryptSmokeDropFileId) {
+				if (!window.__nodecryptSmokeDelayedFileComplete) {
+					const transfer = window.fileTransfers && window.fileTransfers.get(message.fileId);
+					if (transfer && transfer.receivedVolumes) {
+						for (const volumeIndexToDrop of volumeIndicesToDrop) {
+							transfer.receivedVolumes.delete(volumeIndexToDrop);
+							if (Array.isArray(transfer.volumeData)) {
+								transfer.volumeData[volumeIndexToDrop] = undefined;
+							}
+							window.__nodecryptSmokeDroppedFileVolumes.push(volumeIndexToDrop);
+						}
+						if (transfer.status === 'completed') {
+							transfer.status = 'receiving';
+						}
+					}
+					window.__nodecryptSmokeDelayedFileComplete = { message, args };
+					return
+				}
+			}
+			return originalHandleFileMessage.call(window, message, ...args)
+		}
+	}, { fileNameToDrop: expectedName, volumeIndicesToDrop: volumeIndices });
+}
+
+async function releaseDelayedFileComplete(page) {
+	return page.evaluate(() => {
+		const pending = window.__nodecryptSmokeDelayedFileComplete;
+		if (!pending || !window.__nodecryptSmokeOriginalHandleFileMessage) return false;
+		window.__nodecryptSmokeDelayedFileComplete = null;
+		window.__nodecryptSmokeOriginalHandleFileMessage.call(window, pending.message, ...pending.args);
+		return true
+	});
+}
+
+async function waitForDelayedFileComplete(page, timeoutMs = 15000) {
+	try {
+		await page.waitForFunction(() => Boolean(window.__nodecryptSmokeDelayedFileComplete), null, { timeout: timeoutMs });
+		return true
+	} catch {
+		return false
+	}
+}
+
+async function expireSenderRepairWindow(page, expectedName) {
+	return page.evaluate((fileNameToFind) => {
+		const transfers = window.fileTransfers && typeof window.fileTransfers.values === 'function' ?
+			Array.from(window.fileTransfers.values()) :
+			[];
+		const transfer = transfers.find(item => item.fileName === fileNameToFind && item.direction === 'send');
+		if (!transfer) return false;
+		transfer.resumeUntil = Date.now() - 1;
+		return true
+	}, expectedName);
 }
 
 async function getTransferState(page, expectedName) {
@@ -206,6 +383,7 @@ async function getTransferState(page, expectedName) {
 		return {
 			status: transfer.status,
 			direction: transfer.direction || '',
+			scope: transfer.scope || '',
 			compression: transfer.compression || '',
 			receivedCount: transfer.receivedVolumes ? transfer.receivedVolumes.size : null,
 			totalVolumes: transfer.totalVolumes || null,
@@ -246,20 +424,119 @@ async function runSmoke() {
 		await waitForChatText(bob, message, 15000);
 		await sendFile(alice);
 		const bobHasLiveFile = await waitForChatText(bob, fileName, 15000);
-		await dropOneIncomingLargeFileChunk(bob, largeFileName);
+		await dropIncomingLargeFileChunks(bob, largeFileName, largeFileDropIndices);
 		await sendLargeFile(alice);
 		const bobHasLargeFile = await waitForChatText(bob, largeFileName, 15000);
+		const bobDroppedLargeFileChunks = await waitForDroppedChunkCount(bob, largeFileDropIndices.length);
 		const bobHasCompletedLargeFile = await waitForFileTransferCompleted(bob, largeFileName);
-		const bobDroppedLargeFileChunk = await bob.evaluate(() => window.__nodecryptSmokeDroppedFileVolume === true);
+		const bobDroppedLargeFileChunkCount = await bob.evaluate(() => (
+			Array.isArray(window.__nodecryptSmokeDroppedFileVolumes) ?
+				window.__nodecryptSmokeDroppedFileVolumes.length :
+				0
+		));
 		const bobLargeTransferState = await getTransferState(bob, largeFileName);
 		const aliceLargeTransferState = await getTransferState(alice, largeFileName);
+		await restoreIncomingFileChunkDropper(bob);
 		const bobNackRepairedLargeFile = Boolean(
-			bobDroppedLargeFileChunk &&
+			bobDroppedLargeFileChunks &&
+			bobDroppedLargeFileChunkCount === largeFileDropIndices.length &&
 			bobLargeTransferState &&
 			bobLargeTransferState.status === 'completed' &&
 			bobLargeTransferState.nackRequests > 0 &&
 			aliceLargeTransferState &&
-			aliceLargeTransferState.resentVolumes > 0
+			aliceLargeTransferState.resentVolumes >= largeFileDropIndices.length
+		);
+
+		await setPrivateChat(alice, 'bob', true);
+		await dropIncomingLargeFileChunks(bob, privateLargeFileName, privateLargeFileDropIndices);
+		await sendLargeFile(alice, privateLargeFileName, privateLargeFilePath, 66);
+		const bobHasPrivateLargeFile = await waitForChatText(bob, privateLargeFileName, 15000);
+		const bobDroppedPrivateLargeFileChunks = await waitForDroppedChunkCount(bob, privateLargeFileDropIndices.length);
+		const bobHasCompletedPrivateLargeFile = await waitForFileTransferCompleted(bob, privateLargeFileName);
+		const bobDroppedPrivateLargeFileChunkCount = await bob.evaluate(() => (
+			Array.isArray(window.__nodecryptSmokeDroppedFileVolumes) ?
+				window.__nodecryptSmokeDroppedFileVolumes.length :
+				0
+		));
+		const bobPrivateLargeTransferState = await getTransferState(bob, privateLargeFileName);
+		const alicePrivateLargeTransferState = await getTransferState(alice, privateLargeFileName);
+		await restoreIncomingFileChunkDropper(bob);
+		const bobNackRepairedPrivateLargeFile = Boolean(
+			bobHasPrivateLargeFile &&
+			bobDroppedPrivateLargeFileChunks &&
+			bobHasCompletedPrivateLargeFile &&
+			bobDroppedPrivateLargeFileChunkCount === privateLargeFileDropIndices.length &&
+			bobPrivateLargeTransferState &&
+			bobPrivateLargeTransferState.status === 'completed' &&
+			bobPrivateLargeTransferState.scope === 'private' &&
+			bobPrivateLargeTransferState.nackRequests > 0 &&
+			alicePrivateLargeTransferState &&
+			alicePrivateLargeTransferState.scope === 'private' &&
+			alicePrivateLargeTransferState.resentVolumes >= privateLargeFileDropIndices.length
+		);
+		await setPrivateChat(alice, 'bob', false);
+
+		const danaContext = await newEnglishContext(browser);
+		const dana = await danaContext.newPage();
+		attachPageDiagnostics(dana, 'dana');
+		await joinRoom(dana, 'dana');
+		await waitForMember(alice, 'dana');
+		await trackResentFileMessages(dana, multiReceiverLargeFileName);
+		await dropIncomingLargeFileChunks(bob, multiReceiverLargeFileName, multiReceiverDropIndices);
+		await sendLargeFile(alice, multiReceiverLargeFileName, multiReceiverLargeFilePath, 67);
+		const bobDroppedMultiReceiverChunks = await waitForDroppedChunkCount(bob, multiReceiverDropIndices.length);
+		const bobHasCompletedMultiReceiverLargeFile = await waitForFileTransferCompleted(bob, multiReceiverLargeFileName);
+		const danaHasCompletedMultiReceiverLargeFile = await waitForFileTransferCompleted(dana, multiReceiverLargeFileName);
+		const bobDroppedMultiReceiverChunkCount = await bob.evaluate(() => (
+			Array.isArray(window.__nodecryptSmokeDroppedFileVolumes) ?
+				window.__nodecryptSmokeDroppedFileVolumes.length :
+				0
+		));
+		const bobMultiReceiverTransferState = await getTransferState(bob, multiReceiverLargeFileName);
+		const danaMultiReceiverTransferState = await getTransferState(dana, multiReceiverLargeFileName);
+		const aliceMultiReceiverTransferState = await getTransferState(alice, multiReceiverLargeFileName);
+		const danaResentFileMessageCounts = await getResentFileMessageCounts(dana);
+		await restoreIncomingFileChunkDropper(bob);
+		await restoreIncomingFileChunkDropper(dana);
+		const publicResendWasSinglecast = Boolean(
+			bobHasCompletedMultiReceiverLargeFile &&
+			danaHasCompletedMultiReceiverLargeFile &&
+			bobDroppedMultiReceiverChunks &&
+			bobDroppedMultiReceiverChunkCount === multiReceiverDropIndices.length &&
+			bobMultiReceiverTransferState &&
+			bobMultiReceiverTransferState.nackRequests > 0 &&
+			danaMultiReceiverTransferState &&
+			danaMultiReceiverTransferState.nackRequests === 0 &&
+			aliceMultiReceiverTransferState &&
+			aliceMultiReceiverTransferState.resentVolumes >= multiReceiverDropIndices.length &&
+			danaResentFileMessageCounts.resentVolumes === 0 &&
+			danaResentFileMessageCounts.resentCompletes === 0
+		);
+
+		await delayIncomingFileCompleteAfterDroppingChunks(bob, expiredLargeFileName, expiredLargeFileDropIndices);
+		await sendLargeFile(alice, expiredLargeFileName, expiredLargeFilePath, 68);
+		const bobHasExpiredLargeFile = await waitForChatText(bob, expiredLargeFileName, 15000);
+		const bobDroppedExpiredLargeFileChunks = await waitForDroppedChunkCount(bob, expiredLargeFileDropIndices.length);
+		const delayedExpiredFileComplete = await waitForDelayedFileComplete(bob);
+		const aliceExpiredLargeFileSent = await waitForFileTransferCompleted(alice, expiredLargeFileName);
+		const expiredSenderWindow = await expireSenderRepairWindow(alice, expiredLargeFileName);
+		const releasedExpiredFileComplete = await releaseDelayedFileComplete(bob);
+		await bob.waitForTimeout(5000);
+		const bobExpiredLargeTransferState = await getTransferState(bob, expiredLargeFileName);
+		const aliceExpiredLargeTransferState = await getTransferState(alice, expiredLargeFileName);
+		await restoreIncomingFileChunkDropper(bob);
+		const expiredRepairWindowRejected = Boolean(
+			bobHasExpiredLargeFile &&
+			bobDroppedExpiredLargeFileChunks &&
+			delayedExpiredFileComplete &&
+			aliceExpiredLargeFileSent &&
+			expiredSenderWindow &&
+			releasedExpiredFileComplete &&
+			bobExpiredLargeTransferState &&
+			bobExpiredLargeTransferState.status !== 'completed' &&
+			bobExpiredLargeTransferState.nackRequests > 0 &&
+			aliceExpiredLargeTransferState &&
+			aliceExpiredLargeTransferState.resentVolumes === 0
 		);
 
 		const bobText = await chatText(bob);
@@ -278,6 +555,7 @@ async function runSmoke() {
 		const eveIsIsolated = !eveText.includes(message) && !eveText.includes(liveMessage) && !eveText.includes('alice') && !eveText.includes('bob');
 
 		await eveContext.close();
+		await danaContext.close();
 		await bobContext.close();
 		await aliceContext.close();
 		await new Promise((resolve) => setTimeout(resolve, 2200));
@@ -292,7 +570,7 @@ async function runSmoke() {
 		await charlieContext.close();
 
 		const result = {
-			ok: bobHasHistory && bobHasLoadedNotice && bobHasLiveFile && bobHasLargeFile && bobHasCompletedLargeFile && bobNackRepairedLargeFile && bobHasLiveMessage && eveIsIsolated && !charlieHasOldMessage,
+			ok: bobHasHistory && bobHasLoadedNotice && bobHasLiveFile && bobHasLargeFile && bobHasCompletedLargeFile && bobNackRepairedLargeFile && bobNackRepairedPrivateLargeFile && publicResendWasSinglecast && expiredRepairWindowRejected && bobHasLiveMessage && eveIsIsolated && !charlieHasOldMessage,
 			roomName,
 			message,
 			liveMessage,
@@ -301,10 +579,39 @@ async function runSmoke() {
 			bobHasLiveFile,
 			bobHasLargeFile,
 			bobHasCompletedLargeFile,
-			bobDroppedLargeFileChunk,
+			bobDroppedLargeFileChunks,
+			bobDroppedLargeFileChunkCount,
+			largeFileDropIndices,
 			bobNackRepairedLargeFile,
 			bobLargeTransferState,
 			aliceLargeTransferState,
+			bobHasPrivateLargeFile,
+			bobHasCompletedPrivateLargeFile,
+			bobDroppedPrivateLargeFileChunks,
+			bobDroppedPrivateLargeFileChunkCount,
+			privateLargeFileDropIndices,
+			bobNackRepairedPrivateLargeFile,
+			bobPrivateLargeTransferState,
+			alicePrivateLargeTransferState,
+			bobHasCompletedMultiReceiverLargeFile,
+			danaHasCompletedMultiReceiverLargeFile,
+			bobDroppedMultiReceiverChunks,
+			bobDroppedMultiReceiverChunkCount,
+			multiReceiverDropIndices,
+			publicResendWasSinglecast,
+			bobMultiReceiverTransferState,
+			danaMultiReceiverTransferState,
+			aliceMultiReceiverTransferState,
+			danaResentFileMessageCounts,
+			bobHasExpiredLargeFile,
+			bobDroppedExpiredLargeFileChunks,
+			delayedExpiredFileComplete,
+			aliceExpiredLargeFileSent,
+			expiredSenderWindow,
+			releasedExpiredFileComplete,
+			expiredRepairWindowRejected,
+			bobExpiredLargeTransferState,
+			aliceExpiredLargeTransferState,
 			bobHasLiveMessage,
 			eveIsIsolated,
 			charlieHasOldMessage,
@@ -317,15 +624,12 @@ async function runSmoke() {
 		if (browser) {
 			await browser.close();
 		}
-		try {
-			rmSync(filePath);
-		} catch {
-			// Ignore temp-file cleanup failures.
-		}
-		try {
-			rmSync(largeFilePath);
-		} catch {
-			// Ignore temp-file cleanup failures.
+		for (const path of tempFilePaths) {
+			try {
+				rmSync(path);
+			} catch {
+				// Ignore temp-file cleanup failures.
+			}
 		}
 		stopProcessTree(wrangler);
 	}
