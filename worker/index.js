@@ -57,7 +57,7 @@ function getRequestScheme(request, url) {
   return urlScheme;
 }
 
-function shouldRedirectToHttps(request, url) {
+export function shouldRedirectToHttps(request, url) {
   return !isLocalHostname(url.hostname) && getRequestScheme(request, url) === 'http';
 }
 
@@ -86,14 +86,28 @@ function withResponseHeaders(response, url) {
   });
 }
 
-function getRoomObjectName(url) {
-  const roomHash = url.searchParams.get('room');
+export function getExpectedRoomHash(url) {
+	const roomHash = url.searchParams.get('room');
 
-  if (roomHash && ROOM_HASH_PATTERN.test(roomHash)) {
-    return `room:${roomHash.toLowerCase()}`;
+	if (roomHash && ROOM_HASH_PATTERN.test(roomHash)) {
+		return roomHash.toLowerCase();
+	}
+
+	return null;
+}
+
+export function getRoomObjectName(url) {
+  const roomHash = getExpectedRoomHash(url);
+
+  if (roomHash) {
+    return `room:${roomHash}`;
   }
 
-  return DEFAULT_ROOM_OBJECT;
+	return DEFAULT_ROOM_OBJECT;
+}
+
+export function isJoinRoomAllowed(expectedRoomHash, channel) {
+  return !expectedRoomHash || channel === expectedRoomHash;
 }
 
 export default {
@@ -213,14 +227,15 @@ export class ChatRoom {  constructor(state, env) {
     const [client, server] = Object.values(webSocketPair);
 
     // Accept the WebSocket connection
-    this.handleSession(server);
+    const expectedRoomHash = getExpectedRoomHash(new URL(request.url));
+    this.handleSession(server, expectedRoomHash);
 
     return new Response(null, {
       status: 101,
       webSocket: client,
     });
   }  // WebSocket connection event handler
-  async handleSession(connection) {    connection.accept();
+  async handleSession(connection, expectedRoomHash = null) {    connection.accept();
 
     // 清理旧连接
     await this.cleanupOldConnections(true);
@@ -238,7 +253,8 @@ export class ChatRoom {  constructor(state, env) {
       seen: getTime(),
       key: null,
       shared: null,
-      channel: null
+      channel: null,
+      expectedRoomHash
     };
 
     // Send RSA public key
@@ -386,7 +402,14 @@ export class ChatRoom {  constructor(state, env) {
     }
 
     try {
-      const channel = decrypted.p;
+      const channel = decrypted.p.toLowerCase();
+      const expectedRoomHash = this.clients[clientId].expectedRoomHash;
+      if (!isJoinRoomAllowed(expectedRoomHash, channel)) {
+        logEvent('message-join-room-mismatch', clientId, 'error');
+        this.closeConnection(this.clients[clientId].connection);
+        delete this.clients[clientId];
+        return;
+      }
 
       this.clients[clientId].channel = channel;
 

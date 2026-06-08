@@ -175,6 +175,17 @@ async function waitForChatText(page, expected, timeoutMs = 15000) {
 	return false;
 }
 
+async function waitForConnectionStatus(page, expectedStatus, timeoutMs = 15000) {
+	try {
+		await page.waitForFunction((status) => {
+			return (document.querySelector('.connection-status-badge')?.getAttribute('data-connection-status') || '') === status
+		}, expectedStatus, { timeout: timeoutMs });
+		return true
+	} catch {
+		return false
+	}
+}
+
 async function countChatTextOccurrences(page, expected) {
 	return page.evaluate((needle) => {
 		const text = document.querySelector('#chat-area')?.innerText || '';
@@ -737,7 +748,10 @@ async function runSmoke() {
 		await bob.waitForTimeout(500);
 		const bobReconnectUiStateAfterClosedRequest = await getFileUiState(bob, reconnectLargeFileName);
 		const bobReconnectUiWaitingAfterClosedRequest = isRepairWaitingUi(bobReconnectUiStateAfterClosedRequest);
+		const bobConnectionReconnecting = await waitForConnectionStatus(bob, 'reconnecting', 5000);
+		const bobReconnectClosedNoticeCount = await countChatTextOccurrences(bob, 'Connection lost. Reconnecting...');
 		const bobReconnectSocketReopened = await waitForLatestSmokeSocketOpen(bob, reconnectSocketClose.count + 1, 25000);
+		const bobConnectionConnected = await waitForConnectionStatus(bob, 'connected', 25000);
 		const bobHasCompletedReconnectLargeFile = await waitForFileTransferCompleted(bob, reconnectLargeFileName, 60000);
 		const bobReconnectUiRepaired = await waitForFileUiState(bob, reconnectLargeFileName, 'repaired', 10000);
 		const bobReconnectUiState = await getFileUiState(bob, reconnectLargeFileName);
@@ -752,7 +766,10 @@ async function runSmoke() {
 			reconnectSocketClose.closed &&
 			releasedReconnectFileCompleteWhileClosed &&
 			bobReconnectUiWaitingAfterClosedRequest &&
+			bobConnectionReconnecting &&
+			bobReconnectClosedNoticeCount === 1 &&
 			bobReconnectSocketReopened &&
+			bobConnectionConnected &&
 			bobHasCompletedReconnectLargeFile &&
 			bobReconnectUiRepaired &&
 			bobReconnectUiRepairedOk &&
@@ -862,7 +879,10 @@ async function runSmoke() {
 			releasedReconnectFileCompleteWhileClosed,
 			bobReconnectUiStateAfterClosedRequest,
 			bobReconnectUiWaitingAfterClosedRequest,
+			bobConnectionReconnecting,
+			bobReconnectClosedNoticeCount,
 			bobReconnectSocketReopened,
+			bobConnectionConnected,
 			bobHasCompletedReconnectLargeFile,
 			bobReconnectUiRepaired,
 			bobReconnectUiRepairedOk,

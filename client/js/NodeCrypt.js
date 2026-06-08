@@ -56,6 +56,7 @@ class NodeCrypt {
 			pingInterval: config.pingInterval || 20000,
 			debug: config.debug || false,
 		};
+		this.reconnectMaxDelay = 30000;
 		this.callbacks = {
 			onServerClosed: callbacks.onServerClosed || null,
 			onServerSecured: callbacks.onServerSecured || null,
@@ -66,6 +67,7 @@ class NodeCrypt {
 			onClientLeft: callbacks.onClientLeft || null,
 			onClientMessage: callbacks.onClientMessage || null,
 			onHistoryMessages: callbacks.onHistoryMessages || null,
+			onConnectionStatus: callbacks.onConnectionStatus || null,
 		};
 		this.SERVER_KEY_STORAGE = 'nodecrypt_server_key';
 		this.serverKeys = null;
@@ -77,6 +79,9 @@ class NodeCrypt {
 		this.ping = null;
 		this.lastPongAt = 0;
 		this.lastPingAt = 0;
+		this.connectionStatus = 'offline';
+		this.reconnectAttempt = 0;
+		this.lastClosedConnection = null;
 		this.channel = {};
 		this.setCredentials = this.setCredentials.bind(this);
 		this.connect = this.connect.bind(this);
@@ -143,6 +148,9 @@ class NodeCrypt {
 		this.logEvent('connect', wsAddress);
 		this.stopReconnect();
 		this.stopPing();
+		this.setConnectionStatus(this.reconnectAttempt > 0 ? 'reconnecting' : 'connecting', {
+			attempt: this.reconnectAttempt
+		});
 		this.serverKeys = null;
 		this.serverShared = null;
 		this.historyKey = null;
@@ -216,12 +224,16 @@ class NodeCrypt {
 		this.callbacks.onClientLeft = null;
 		this.callbacks.onClientMessage = null;
 		this.callbacks.onHistoryMessages = null;
+		this.callbacks.onConnectionStatus = null;
 		this.serverKeys = null;
 		this.serverShared = null;
 		this.historyKey = null;
 		this.credentials = null;
 		this.lastPongAt = 0;
 		this.lastPingAt = 0;
+		this.connectionStatus = 'offline';
+		this.reconnectAttempt = 0;
+		this.lastClosedConnection = null;
 		if (this.connection) {
 			this.connection.onopen = null;
 			this.connection.onmessage = null;
@@ -303,6 +315,9 @@ class NodeCrypt {
 						a: 'j',
 						p: this.credentials.channel
 					}, this.serverShared));
+					this.reconnectAttempt = 0;
+					this.lastClosedConnection = null;
+					this.setConnectionStatus('connected');
 					if (this.callbacks.onServerSecured) {
 						try {
 							this.callbacks.onServerSecured()
@@ -451,17 +466,7 @@ class NodeCrypt {
 	async onError(event) {
 		if (event && event.target && event.target !== this.connection) return;
 		this.logEvent('onError', event, 'error');
-		this.disconnect();
-		if (this.credentials) {
-			this.startReconnect()
-		}
-		if (this.callbacks.onServerClosed) {
-			try {
-				this.callbacks.onServerClosed()
-			} catch (error) {
-				this.logEvent('onError-server-closed-callback', error, 'error')
-			}
-		}
+		this.handleConnectionClosed(event, 'error')
 	}
 
 	// WebSocket close event handler
@@ -469,15 +474,47 @@ class NodeCrypt {
 	async onClose(event) {
 		if (event && event.target && event.target !== this.connection) return;
 		this.logEvent('onClose', event);
-		this.disconnect();
+		this.handleConnectionClosed(event, 'close')
+	}
+
+	handleConnectionClosed(event, reason) {
+		const socket = event && event.target ? event.target : this.connection;
+		if (socket && this.lastClosedConnection === socket) {
+			return
+		}
+		this.lastClosedConnection = socket;
+		this.stopPing();
+		if (socket && socket.readyState !== WebSocket.CLOSING && socket.readyState !== WebSocket.CLOSED) {
+			try {
+				socket.close()
+			} catch (error) {
+				this.logEvent('handleConnectionClosed-close', error, 'error')
+			}
+		}
 		if (this.credentials) {
 			this.startReconnect()
+		} else {
+			this.setConnectionStatus('offline', { reason })
 		}
 		if (this.callbacks.onServerClosed) {
 			try {
-				this.callbacks.onServerClosed()
+				this.callbacks.onServerClosed(reason)
 			} catch (error) {
-				this.logEvent('onClose-server-closed-callback', error, 'error')
+				this.logEvent('connection-closed-callback', error, 'error')
+			}
+		}
+	}
+
+	setConnectionStatus(status, details = {}) {
+		if (this.connectionStatus === status && details.attempt === undefined) {
+			return
+		}
+		this.connectionStatus = status;
+		if (this.callbacks.onConnectionStatus) {
+			try {
+				this.callbacks.onConnectionStatus(status, details)
+			} catch (error) {
+				this.logEvent('connection-status-callback', error, 'error')
 			}
 		}
 	}
@@ -509,11 +546,25 @@ class NodeCrypt {
 	// 启动重连定时器
 	startReconnect() {
 		this.stopReconnect();
-		this.logEvent('startReconnect');
+		this.reconnectAttempt += 1;
+		const delay = this.getReconnectDelay();
+		this.setConnectionStatus('reconnecting', {
+			attempt: this.reconnectAttempt,
+			delay
+		});
+		this.logEvent('startReconnect', `attempt=${this.reconnectAttempt} delay=${Math.round(delay)}`);
 		this.reconnect = setTimeout(() => {
 			this.reconnect = null;
 			this.connect()
-		}, this.config.reconnectDelay)
+		}, delay)
+	}
+
+	getReconnectDelay() {
+		const baseDelay = Math.max(500, Number(this.config.reconnectDelay) || 3000);
+		const attempt = Math.max(1, this.reconnectAttempt);
+		const exponentialDelay = Math.min(this.reconnectMaxDelay, baseDelay * (2 ** (attempt - 1)));
+		const jitter = exponentialDelay * 0.2 * (Math.random() - 0.5) * 2;
+		return Math.max(baseDelay, Math.round(exponentialDelay + jitter))
 	}
 
 	// Stop reconnect timer
@@ -678,7 +729,7 @@ class NodeCrypt {
 				}
 				if (type === 'text' && this.isString(data)) {
 					if (!(await this.storeHistoryMessage(type, data))) {
-						return (false)
+						this.logEvent('sendChannelMessage-history-best-effort', 'history store failed', 'error')
 					}
 				}
 				return (true)

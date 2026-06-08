@@ -547,6 +547,43 @@ body.login-page {
 	height: 100%;
 }
 
+.connection-status-badge {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 2px 8px;
+	border-radius: 999px;
+	font-size: 11px;
+	font-weight: 600;
+	line-height: 1.4;
+	background: rgba(149, 165, 166, 0.14);
+	color: #5f6f73;
+}
+
+.connection-status-badge::before {
+	content: '';
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: currentColor;
+}
+
+.connection-status-connected {
+	background: rgba(76, 175, 80, 0.14);
+	color: #1b7f3a;
+}
+
+.connection-status-connecting,
+.connection-status-reconnecting {
+	background: rgba(255, 152, 0, 0.16);
+	color: #9a5a00;
+}
+
+.connection-status-offline {
+	background: rgba(244, 67, 54, 0.14);
+	color: #b71c1c;
+}
+
 .pinned {
 	padding: 2px 24px;
 	background: #fff;
@@ -698,6 +735,34 @@ body.login-page {
 	align-items: flex-end;
 	padding: 3px 30px 17px 30px;
 	background: none;
+	position: relative;
+}
+
+.private-chat-pill {
+	position: absolute;
+	left: 50%;
+	bottom: calc(100% + 6px);
+	transform: translateX(-50%);
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	max-width: min(80vw, 420px);
+	padding: 6px 12px;
+	border: 1px solid rgba(48, 168, 247, 0.26);
+	border-radius: 999px;
+	background: #eef8ff;
+	color: #1976b8;
+	font-size: 13px;
+	font-weight: 600;
+	box-shadow: 0 2px 8px rgba(48, 168, 247, 0.12);
+	cursor: pointer;
+}
+
+.private-chat-pill:hover,
+.private-chat-pill:focus-visible {
+	background: #dff2ff;
+	outline: 2px solid rgba(48, 168, 247, 0.28);
+	outline-offset: 2px;
 }
 
 .rows-wrapper {
@@ -1074,6 +1139,12 @@ body.login-page {
 .member:hover {
 	background: #f5f5f5;
 	transform: translateX(2px);
+}
+
+.member:focus-visible,
+.send-message-btn:focus-visible {
+	outline: 2px solid rgba(48, 168, 247, 0.55);
+	outline-offset: 2px;
 }
 
 .member .member-info {

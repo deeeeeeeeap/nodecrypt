@@ -347,6 +347,12 @@ window.addEventListener('DOMContentLoaded', () => {
 	sendButton = document.querySelector('.send-message-btn');
 	if (sendButton) {
 		sendButton.addEventListener('click', () => sendMessage().catch(handleMessageSendError));
+		sendButton.addEventListener('keydown', (event) => {
+			if (event.key === 'Enter' || event.key === ' ') {
+				event.preventDefault();
+				sendMessage().catch(handleMessageSendError)
+			}
+		});
 	}
 	
 	// 设置发送文件功能

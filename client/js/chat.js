@@ -27,14 +27,31 @@ import {
 import {
 	t
 } from './util.i18n.js';
+import {
+	getRecentMessages,
+	isNearBottomScroll
+} from './chat.logic.js';
 
 let chatRenderFragment = null;
 let autoGrowFrame = null;
+let chatScrollFrame = null;
+
+function scheduleScrollToBottom(chatArea) {
+	if (chatScrollFrame) {
+		cancelAnimationFrame(chatScrollFrame)
+	}
+	chatScrollFrame = requestAnimationFrame(() => {
+		chatScrollFrame = null;
+		chatArea.scrollTop = chatArea.scrollHeight
+	})
+}
 
 function appendChatNode(chatArea, node) {
+	const shouldStickToBottom = chatRenderFragment ||
+		isNearBottomScroll(chatArea.scrollHeight, chatArea.scrollTop, chatArea.clientHeight);
 	(chatRenderFragment || chatArea).appendChild(node);
-	if (!chatRenderFragment) {
-		chatArea.scrollTop = chatArea.scrollHeight
+	if (!chatRenderFragment && shouldStickToBottom) {
+		scheduleScrollToBottom(chatArea)
 	}
 }
 
@@ -65,13 +82,13 @@ export function renderChatArea() {
 	chatArea.innerHTML = '';
 	chatRenderFragment = document.createDocumentFragment();
 	try {
-		roomsData[activeRoomIndex].messages.forEach(m => {
+		getRecentMessages(roomsData[activeRoomIndex].messages).forEach(m => {
 			if (m.type === 'me') addMsg(m.text, true, m.msgType || 'text', m.timestamp);
 			else if (m.type === 'system') addSystemMsg(m.text, true, m.timestamp);
 			else addOtherMsg(m.text, m.userName, m.avatar, true, m.msgType || 'text', m.timestamp)
 		});
 		chatArea.appendChild(chatRenderFragment);
-		chatArea.scrollTop = chatArea.scrollHeight
+		scheduleScrollToBottom(chatArea)
 	} finally {
 		chatRenderFragment = null
 	}
@@ -262,14 +279,31 @@ export function updateChatInputStyle() {
 	const chatInputArea = $('.chat-input-area');
 	const placeholder = $('.input-field-placeholder');
 	const inputMessageInput = $('.input-message-input');
-	if (!chatInputArea || !placeholder || !inputMessageInput) return;	if (rd && rd.privateChatTargetId) {
+	if (!chatInputArea || !placeholder || !inputMessageInput) return;
+	let privatePill = chatInputArea.querySelector('.private-chat-pill');
+	if (rd && rd.privateChatTargetId) {
 		addClass(chatInputArea, 'private-mode');
 		addClass(inputMessageInput, 'private-mode');
-		placeholder.textContent = `${t('ui.private_message_to', 'Private Message to')} ${rd.privateChatTargetName}`
+		placeholder.textContent = `${t('ui.private_message_to', 'Private Message to')} ${rd.privateChatTargetName}`;
+		if (!privatePill) {
+			privatePill = createElement('button', {
+				class: 'private-chat-pill',
+				type: 'button',
+				'aria-label': t('ui.private_chat_close', 'Exit private chat')
+			});
+			privatePill.addEventListener('click', () => {
+				window.dispatchEvent(new CustomEvent('nodecrypt:clear-private-chat'))
+			});
+			chatInputArea.prepend(privatePill)
+		}
+		privatePill.innerHTML = `<span>${t('ui.private_message_to', 'Private Message to')} ${escapeHTML(rd.privateChatTargetName)}</span><span aria-hidden="true">&times;</span>`
 	} else {
 		removeClass(chatInputArea, 'private-mode');
 		removeClass(inputMessageInput, 'private-mode');
-		placeholder.textContent = t('ui.message', 'Message')
+		placeholder.textContent = t('ui.message', 'Message');
+		if (privatePill) {
+			privatePill.remove()
+		}
 	}
 	const html = inputMessageInput.innerHTML.replace(/<br\s*\/?>(\s*)?/gi, '').replace(/&nbsp;/g, '').replace(/\u200B/g, '').trim();
 	placeholder.style.opacity = (html === '') ? '1' : '0'

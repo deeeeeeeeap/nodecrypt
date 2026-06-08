@@ -66,7 +66,55 @@ export function getNewRoomData() {
 		historyIds: new Set(),
 		unreadCount: 0,
 		privateChatTargetId: null,
-		privateChatTargetName: null
+		privateChatTargetName: null,
+		connectionStatus: 'offline',
+		connectionStatusText: '',
+		reconnectAttempt: 0,
+		hasConnectedBefore: false
+	}
+}
+
+function setRoomConnectionStatus(idx, status, details = {}) {
+	const rd = roomsData[idx];
+	if (!rd) return;
+	const previousStatus = rd.connectionStatus;
+	const addConnectionMessage = (text) => {
+		const timestamp = Date.now();
+		rd.messages.push({
+			type: 'system',
+			text,
+			timestamp
+		});
+		if (activeRoomIndex === idx) {
+			addSystemMsg(text, true, timestamp)
+		}
+	};
+	rd.connectionStatus = status;
+	rd.reconnectAttempt = details.attempt || 0;
+	if (status === 'connected') {
+		rd.connectionStatusText = t('ui.connection_connected', 'Connected');
+		if (previousStatus !== 'connected') {
+			addConnectionMessage(rd.hasConnectedBefore ?
+				t('system.connection_restored', 'Connection restored') :
+				t('system.secured', 'connection secured')
+			);
+		}
+		rd.hasConnectedBefore = true
+	} else if (status === 'reconnecting') {
+		rd.connectionStatusText = t('ui.connection_reconnecting', 'Reconnecting');
+		if (previousStatus !== 'reconnecting' && previousStatus !== 'connecting') {
+			addConnectionMessage(t('system.connection_reconnecting', 'Connection lost. Reconnecting...'))
+		}
+	} else if (status === 'connecting') {
+		rd.connectionStatusText = t('ui.connection_connecting', 'Connecting')
+	} else {
+		rd.connectionStatusText = t('ui.connection_offline', 'Offline');
+		if (previousStatus !== 'offline' && previousStatus !== 'reconnecting') {
+			addConnectionMessage(t('system.connection_closed', 'Node connection closed'))
+		}
+	}
+	if (activeRoomIndex === idx) {
+		renderMainHeader()
 	}
 }
 
@@ -126,6 +174,8 @@ export function joinRoom(userName, roomName, password, modal = null, onResult) {
 	newRd.roomName = roomName;
 	newRd.myUserName = userName;
 	newRd.password = password;
+	newRd.connectionStatus = 'connecting';
+	newRd.connectionStatusText = t('ui.connection_connecting', 'Connecting');
 	roomsData.push(newRd);
 	const idx = roomsData.length - 1;
 	switchRoom(idx);
@@ -135,7 +185,6 @@ export function joinRoom(userName, roomName, password, modal = null, onResult) {
 	let closed = false;
 	const callbacks = {
 		onServerClosed: () => {
-			addSystemMsg(t('system.connection_closed', 'Node connection closed'));
 			if (onResult && !closed) {
 				closed = true;
 				onResult(false)
@@ -172,8 +221,8 @@ export function joinRoom(userName, roomName, password, modal = null, onResult) {
 				closed = true;
 				onResult(true)
 			}
-			addSystemMsg(t('system.secured', 'connection secured'))
 		},
+		onConnectionStatus: (status, details) => setRoomConnectionStatus(idx, status, details),
 		onClientSecured: (user) => handleClientSecured(idx, user),
 		onClientList: (list, selfId, rawClientIds) => handleClientList(idx, list, selfId, rawClientIds),
 		onClientLeft: (clientId) => handleClientLeft(idx, clientId),
@@ -546,4 +595,13 @@ window.addEventListener('updateSidebarUsername', () => {
 			setSidebarAvatar(rd.myUserName);
 		}
 	}
+});
+
+window.addEventListener('nodecrypt:clear-private-chat', () => {
+	const rd = roomsData[activeRoomIndex];
+	if (!rd || !rd.privateChatTargetId) return;
+	rd.privateChatTargetId = null;
+	rd.privateChatTargetName = null;
+	renderUserList();
+	updateChatInputStyle()
 });

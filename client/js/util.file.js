@@ -26,6 +26,7 @@ const REPAIR_TIMEOUT_BYTES_PER_MS = 1024;
 const FAST_DEFLATE_LEVEL = 3;
 const PUBLIC_PAYLOAD_SAFETY_FACTOR = 3;
 const FILE_ID_PATTERN = /^file_[a-f0-9-]{16,80}$/i;
+const FILE_VOLUME_YIELD_INTERVAL = 4;
 const DIRECT_TRANSFER_EXTENSIONS = new Set([
 	'7z', 'avi', 'br', 'bz2', 'gif', 'gz', 'heic', 'jpeg', 'jpg', 'm4a', 'm4v',
 	'mkv', 'mov', 'mp3', 'mp4', 'ogg', 'png', 'rar', 'webm', 'webp', 'xz', 'zip'
@@ -343,6 +344,17 @@ function scheduleSourceFileRelease(fileId) {
 	}, releaseAfterMs)
 }
 
+function refreshSourceFileRepairWindow(fileId) {
+	const transfer = window.fileTransfers.get(fileId);
+	if (!transfer || transfer.transferMode !== 'direct' || !transfer.sourceFile) return;
+	transfer.resumeUntil = Date.now() + RESUMABLE_TRANSFER_TTL_MS;
+	if (transfer.sourceFileReleaseTimer) {
+		clearTimeout(transfer.sourceFileReleaseTimer);
+		transfer.sourceFileReleaseTimer = null
+	}
+	scheduleSourceFileRelease(fileId)
+}
+
 function readFileAsArrayBuffer(file) {
 	return new Promise((resolve, reject) => {
 		const reader = new FileReader();
@@ -536,11 +548,11 @@ export function setupFileSend({
 	}
 }
 
-function isSafeIntegerInRange(value, min, max) {
+export function isSafeIntegerInRange(value, min, max) {
 	return Number.isSafeInteger(value) && value >= min && value <= max
 }
 
-function isValidFileId(fileId) {
+export function isValidFileId(fileId) {
 	return typeof fileId === 'string' && FILE_ID_PATTERN.test(fileId)
 }
 
@@ -570,7 +582,7 @@ function isValidFileVolumeMessage(message, transfer) {
 	return !transfer.receivedVolumes.has(message.volumeIndex)
 }
 
-function getMissingRanges(transfer, maxRanges = MAX_NACK_RANGES, maxChunks = MAX_NACK_CHUNKS_PER_REQUEST, maxIndex = null) {
+export function getMissingRanges(transfer, maxRanges = MAX_NACK_RANGES, maxChunks = MAX_NACK_CHUNKS_PER_REQUEST, maxIndex = null) {
 	const ranges = [];
 	if (!transfer || !transfer.receivedVolumes || !isSafeIntegerInRange(transfer.totalVolumes, 1, MAX_FILE_VOLUMES)) {
 		return ranges
@@ -644,7 +656,7 @@ function requestGapRepairIfNeeded(transfer, volumeIndex, options = {}) {
 	advanceNextExpectedVolume(transfer)
 }
 
-function normalizeMissingRanges(ranges, totalVolumes) {
+export function normalizeMissingRanges(ranges, totalVolumes) {
 	if (!Array.isArray(ranges) || !isSafeIntegerInRange(totalVolumes, 1, MAX_FILE_VOLUMES)) {
 		return []
 	}
@@ -736,7 +748,7 @@ async function sendDirectFileVolumes(fileId, file, volumeSize, totalVolumes, onS
 
 		fileTransfer.sentVolumes = i + 1;
 		updateFileProgress(fileId);
-		if ((i + 1) % 4 === 0) {
+		if ((i + 1) % FILE_VOLUME_YIELD_INTERVAL === 0) {
 			await yieldToBrowser()
 		}
 	}
@@ -748,6 +760,7 @@ async function sendDirectFileVolumes(fileId, file, volumeSize, totalVolumes, onS
 	});
 
 	fileTransfer.status = 'completed';
+	refreshSourceFileRepairWindow(fileId);
 	scheduleCompletedTransferCleanup(fileId);
 	updateFileProgress(fileId);
 	updateProgress(`Sent ${file.name} successfully`);
@@ -787,7 +800,7 @@ async function sendSingleFileTransfer(file, onSend, updateProgress, volumeSize, 
 		};
 
 		window.fileTransfers.set(fileId, fileTransfer);
-		scheduleSourceFileRelease(fileId);
+		refreshSourceFileRepairWindow(fileId);
 
 		await onSend({
 			type: 'file_start',
@@ -961,55 +974,33 @@ async function sendVolumes(fileId, volumes, onSend, updateProgress, fileName) {
 	const fileTransfer = window.fileTransfers.get(fileId);
 	if (!fileTransfer) return;
 	
-	let currentVolume = 0;
-	const batchSize = 5; // 每批发送5个分卷
-	
-	async function sendNextBatch() {
-		if (currentVolume >= volumes.length) {
-			// 发送完成消息
-			await onSend({
-				type: 'file_complete',
-				fileId,
-				totalVolumes: volumes.length
-			});
-			
-			fileTransfer.status = 'completed';
-			scheduleCompletedTransferCleanup(fileId);
-			updateFileProgress(fileId);
-			updateProgress(`✓ Sent ${fileName} successfully`);
-			return;
-		}
-		
-		// 发送当前批次
-		const batchEnd = Math.min(currentVolume + batchSize, volumes.length);
-		const batch = [];
-		
-		for (let i = currentVolume; i < batchEnd; i++) {
-			batch.push({
-				type: 'file_volume',
-				fileId,
-				volumeIndex: i,
-				volumeData: volumes[i],
-				isLast: i === volumes.length - 1
-			});
-		}
-		
-		// 发送批次中的所有分卷
-		await Promise.all(batch.map(volumeMsg => onSend(volumeMsg)));
-		
-		// 更新发送进度
-		fileTransfer.sentVolumes = batchEnd;
+	for (let i = 0; i < volumes.length; i++) {
+		await onSend({
+			type: 'file_volume',
+			fileId,
+			volumeIndex: i,
+			volumeData: volumes[i],
+			isLast: i === volumes.length - 1
+		});
+
+		fileTransfer.sentVolumes = i + 1;
 		updateFileProgress(fileId);
-		
-		currentVolume = batchEnd;
-		
-		// 继续发送下一批，使用较短的延迟
-		await yieldToBrowser();
-		await sendNextBatch();
+
+		if ((i + 1) % FILE_VOLUME_YIELD_INTERVAL === 0) {
+			await yieldToBrowser()
+		}
 	}
-	
-	// 开始发送
-	await sendNextBatch();
+
+	await onSend({
+		type: 'file_complete',
+		fileId,
+		totalVolumes: volumes.length
+	});
+
+	fileTransfer.status = 'completed';
+	scheduleCompletedTransferCleanup(fileId);
+	updateFileProgress(fileId);
+	updateProgress(`✓ Sent ${fileName} successfully`);
 }
 
 // Update file progress in chat

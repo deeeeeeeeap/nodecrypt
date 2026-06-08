@@ -159,7 +159,7 @@
 		</div>
 		<div class="main">
 			<div class="main-header" id="main-header"> </div>
-			<div class="chat-area" id="chat-area"> </div>
+			<div class="chat-area" id="chat-area" role="log" aria-live="polite" aria-relevant="additions text"> </div>
 			<div class="chat-input-area">
 				<div class="rows-wrapper chat-input-wrapper chat-input-main-wrapper chat-rows-wrapper">					<div class="new-message-wrapper rows-wrapper-row" data-offset="commands"> <button class="chat-emoji-btn" type="button" title=""> <svg width="30px" height="30px" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
 								<g id="SVGRepo_bgCarrier" stroke-width="0"></g>
@@ -170,7 +170,7 @@
 										fill="#808080"></path>
 								</g>
 							</svg> </button>						<div class="input-message-container">
-							<div class="input-message-input is-empty scrollable scrollable-y no-scrollbar input-message-input-init" contenteditable="true" dir="auto" tabindex="-1"></div> <span class="input-field-placeholder i18n is-empty"></span>
+							<div class="input-message-input is-empty scrollable scrollable-y no-scrollbar input-message-input-init" contenteditable="true" role="textbox" aria-multiline="true" aria-label="Message" dir="auto" tabindex="0"></div> <span class="input-field-placeholder i18n is-empty"></span>
 							<div contenteditable="true" tabindex="-1" class="input-message-input is-empty scrollable scrollable-y no-scrollbar input-field-input-fake"></div> <button class="chat-attach-btn chat-attach-btn-abs" type="button" title=""> <svg width="30px" height="30px"
 									viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
 									<g id="SVGRepo_bgCarrier" stroke-width="0"></g>
@@ -184,7 +184,7 @@
 						</div> <input type="file" multiple class="input-hidden">
 					</div>
 				</div>
-							<div class="send-message-btn">
+							<div class="send-message-btn" role="button" tabindex="0" aria-label="Send message">
   <span class="text">
     <svg
       viewBox="0 0 16 16"
