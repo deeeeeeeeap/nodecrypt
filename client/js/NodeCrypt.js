@@ -10,6 +10,9 @@ import {
 import {
 	Buffer
 } from 'buffer';
+import {
+	getHistoryKeySeed
+} from './history.logic.js';
 window.Buffer = Buffer;
 
 function getSafeLogMessage(source, message) {
@@ -747,10 +750,6 @@ class NodeCrypt {
 			if (!this.serverShared || type !== 'text' || !this.isString(data)) {
 				return (false)
 			}
-			if (!this.credentials || !this.credentials.hasPassword) {
-				return (true)
-			}
-
 			const encryptedHistory = await this.encryptHistoryMessage(type, data);
 			if (!encryptedHistory) {
 				return (false)
@@ -780,11 +779,12 @@ class NodeCrypt {
 		if (!this.credentials) {
 			return null
 		}
-		if (!this.credentials.hasPassword) {
+		const keySeed = getHistoryKeySeed(this.credentials);
+		if (!keySeed) {
 			return null
 		}
 
-		const keyHex = sha256(`nodecrypt-history-v1|${this.credentials.channel}|${this.credentials.password}`);
+		const keyHex = sha256(keySeed);
 		this.historyKey = await crypto.subtle.importKey(
 			'raw',
 			Buffer.from(keyHex, 'hex'),

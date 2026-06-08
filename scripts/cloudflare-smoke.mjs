@@ -12,6 +12,7 @@ const password = 'pw123456';
 const wrongPassword = 'pw654321';
 const message = `history-smoke-${Date.now()}`;
 const liveMessage = `live-smoke-${Date.now()}`;
+const noPasswordMessage = `no-password-history-smoke-${Date.now()}`;
 const fileName = `nodecrypt-smoke-${Date.now()}.txt`;
 const filePath = join(tmpdir(), fileName);
 const largeFileName = `nodecrypt-large-${Date.now()}.bin`;
@@ -815,20 +816,44 @@ async function runSmoke() {
 		const charlieHasUnexpectedSendFailure = await hasUnexpectedSendFailureText(charlie);
 		await charlieContext.close();
 
+		const noPasswordAliceContext = await newEnglishContext(browser);
+		const noPasswordAlice = await noPasswordAliceContext.newPage();
+		attachPageDiagnostics(noPasswordAlice, 'no-password-alice');
+		await joinRoom(noPasswordAlice, 'no-password-alice', '');
+		await sendText(noPasswordAlice, noPasswordMessage);
+		await noPasswordAlice.waitForTimeout(1200);
+
+		const noPasswordBobContext = await newEnglishContext(browser);
+		const noPasswordBob = await noPasswordBobContext.newPage();
+		attachPageDiagnostics(noPasswordBob, 'no-password-bob');
+		await joinRoom(noPasswordBob, 'no-password-bob', '');
+		const noPasswordBobHasHistory = await waitForChatText(noPasswordBob, noPasswordMessage, 15000);
+		const noPasswordBobText = await chatText(noPasswordBob);
+		const noPasswordBobHasLoadedNotice = noPasswordBobText.includes('historical messages loaded');
+		const noPasswordAliceHasUnexpectedSendFailure = await hasUnexpectedSendFailureText(noPasswordAlice);
+		const noPasswordBobHasUnexpectedSendFailure = await hasUnexpectedSendFailureText(noPasswordBob);
+		await noPasswordBobContext.close();
+		await noPasswordAliceContext.close();
+
 		const noUnexpectedSendFailures = !aliceHasUnexpectedSendFailure &&
 			!bobHasUnexpectedSendFailure &&
 			!danaHasUnexpectedSendFailure &&
 			!eveHasUnexpectedSendFailure &&
-			!charlieHasUnexpectedSendFailure;
+			!charlieHasUnexpectedSendFailure &&
+			!noPasswordAliceHasUnexpectedSendFailure &&
+			!noPasswordBobHasUnexpectedSendFailure;
 		const diagnosticsClean = pageErrors.length === 0 && consoleErrors.length === 0;
 
 		const result = {
-			ok: bobHasHistory && bobHasLoadedNotice && bobHasLiveFile && bobHasLargeFile && bobHasCompletedLargeFile && bobNackRepairedLargeFile && bobNackRepairedPrivateLargeFile && publicResendWasSinglecast && expiredRepairWindowRejected && bobReconnectRepairCompleted && bobHasLiveMessage && eveIsIsolated && !charlieHasOldMessage && noUnexpectedSendFailures && diagnosticsClean,
+			ok: bobHasHistory && bobHasLoadedNotice && noPasswordBobHasHistory && noPasswordBobHasLoadedNotice && bobHasLiveFile && bobHasLargeFile && bobHasCompletedLargeFile && bobNackRepairedLargeFile && bobNackRepairedPrivateLargeFile && publicResendWasSinglecast && expiredRepairWindowRejected && bobReconnectRepairCompleted && bobHasLiveMessage && eveIsIsolated && !charlieHasOldMessage && noUnexpectedSendFailures && diagnosticsClean,
 			roomName,
 			message,
 			liveMessage,
+			noPasswordMessage,
 			bobHasHistory,
 			bobHasLoadedNotice,
+			noPasswordBobHasHistory,
+			noPasswordBobHasLoadedNotice,
 			bobHasLiveFile,
 			bobHasLargeFile,
 			bobHasCompletedLargeFile,
@@ -900,6 +925,8 @@ async function runSmoke() {
 				dana: danaHasUnexpectedSendFailure,
 				eve: eveHasUnexpectedSendFailure,
 				charlie: charlieHasUnexpectedSendFailure,
+				noPasswordAlice: noPasswordAliceHasUnexpectedSendFailure,
+				noPasswordBob: noPasswordBobHasUnexpectedSendFailure,
 			},
 			diagnosticsClean,
 			pageErrors,
