@@ -25,7 +25,7 @@ const SECURITY_HEADERS = {
     "default-src 'self'",
     "script-src 'self'",
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: blob:",
+    "img-src 'self' data: blob: https://image.757605.xyz",
     "connect-src 'self' wss: ws://localhost:* ws://127.0.0.1:*",
     "worker-src 'self' blob:",
     "object-src 'none'",

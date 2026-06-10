@@ -37,6 +37,34 @@ const MAX_ARCHIVE_FAST_PATH_SIZE = 64 * 1024 * 1024;
 const COMPLETED_TRANSFER_TTL_MS = 60 * 60 * 1000;
 const RESUMABLE_TRANSFER_TTL_MS = 10 * 60 * 1000;
 const FILE_VOLUME_YIELD_INTERVAL = 4;
+const STALE_RECEIVE_TTL_MS = 15 * 60 * 1000;
+const STALE_SWEEP_INTERVAL_MS = 60 * 1000;
+
+// Incomplete inbound transfers whose sender stopped feeding volumes can never finish once
+// the sender's repair window (RESUMABLE_TRANSFER_TTL_MS) lapses; sweep them so their
+// volumeData does not pin up to hundreds of MB for the rest of the session. Late volumes
+// for a swept fileId are rejected by isValidFileVolumeMessage (missing transfer).
+// 发送方停止供给分卷的未完成接收任务,在对方修复窗口过期后已不可能完成;定期清掉,
+// 避免 volumeData 在整个会话期间占住内存。被清理 fileId 的迟到分卷会因传输记录缺失
+// 而被 isValidFileVolumeMessage 拒绝。
+const staleReceiveSweepTimer = setInterval(() => {
+	const now = Date.now();
+	for (const [fileId, transfer] of fileTransfers) {
+		if (!transfer || transfer.direction !== 'receive' || transfer.status === 'completed') continue;
+		const lastActivityAt = transfer.lastActivityAt || 0;
+		if (lastActivityAt && now - lastActivityAt > STALE_RECEIVE_TTL_MS) {
+			if (transfer.repairTimer) clearTimeout(transfer.repairTimer);
+			if (transfer.repairFailureTimer) clearTimeout(transfer.repairFailureTimer);
+			if (transfer.cleanupTimer) clearTimeout(transfer.cleanupTimer);
+			fileTransfers.delete(fileId)
+		}
+	}
+}, STALE_SWEEP_INTERVAL_MS);
+// Under Node (fast tests import this module) the interval must not keep the process alive.
+// Node 环境(快测会导入本模块)下不能让该定时器阻止进程退出。
+if (staleReceiveSweepTimer && typeof staleReceiveSweepTimer.unref === 'function') {
+	staleReceiveSweepTimer.unref()
+}
 
 function scheduleCompletedTransferCleanup(fileId) {
 	const transfer = fileTransfers.get(fileId);
@@ -577,6 +605,7 @@ function handleFileStart(message, isPrivate, renderMessage = true, options = {})
 			requestSeq: 0,
 			lastRequestedAt: 0
 		},
+		lastActivityAt: Date.now(),
 		userName // 记录发送者名字
 	};
 	
