@@ -20,6 +20,17 @@ body.login-page {
 	background-size: cover;
 }
 
+/* The poster artwork (16:9) has meaningful content at every edge (stars, badges,
+   speech bubble); on landscape viewports stretch it edge-to-edge instead of cropping.
+   Portrait/mobile keeps `cover` above, where stretching would distort badly.
+   海报四边都有内容（星星、徽章、对话气泡），横屏下铺满显示完整画面而非裁切；
+   竖屏/手机沿用上方的 cover，避免严重拉伸变形。 */
+@media (orientation: landscape) {
+	body.login-page {
+		background-size: 100% 100%;
+	}
+}
+
 .login-pwd-hint {
 	margin: -18px 2px 0;
 	text-align: left;
