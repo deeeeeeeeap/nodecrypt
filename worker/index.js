@@ -11,9 +11,11 @@ const CLEANUP_INTERVAL_MS = 10000;
 const SERVER_LINK_HKDF_SALT = 'nodecrypt-server-link-v2';
 const SERVER_LINK_HKDF_INFO = 'aes-256-gcm';
 // Per-connection application-layer rate limits.
+// Sized as an abuse ceiling, not traffic shaping: legitimate bursts (200MB max file
+// -> ~273MB base64 volumes plus NACK resends and multi-receiver fan-out) must never trip it.
 const WINDOW_MS = 10000;
-const MAX_MESSAGES_PER_WINDOW = 400;
-const MAX_BYTES_PER_WINDOW = 64 * 1024 * 1024;
+const MAX_MESSAGES_PER_WINDOW = 2400;
+const MAX_BYTES_PER_WINDOW = 768 * 1024 * 1024;
 const MAX_CLIENTS_PER_ROOM = 64;
 const SECURITY_HEADERS = {
   'Content-Security-Policy': [
