@@ -1,0 +1,51 @@
+{
+  "name": "nodecrypt",
+  "version": "1.0.0",
+  "description": "端到端加密节点",
+  "main": "worker/index.js",
+  "scripts": {
+    "clean": "node scripts/clean-dist.mjs",
+    "prebuild": "npm run clean",
+    "build": "vite build",
+    "check": "node --check worker/index.js && node --check worker/utils.js && node --check client/js/NodeCrypt.js && node --check client/js/util.serverCrypto.js && node --check client/js/chat.logic.js && node --check client/js/history.logic.js && node --check client/js/chat.js && node --check client/js/main.js && node --check client/js/room.js && node --check client/js/ui.js && node --check client/js/util.avatar.js && node --check client/js/util.dom.js && node --check client/js/util.emoji.js && node --check client/js/util.file.js && node --check client/js/util.fileUpload.js && node --check client/js/util.i18n.js && node --check client/js/util.image.js && node --check client/js/util.settings.js && node --check client/js/util.string.js && node --check client/js/util.theme.js && node --check scripts/cloudflare-smoke.mjs && node --check scripts/clean-dist.mjs",
+    "test:fast": "node --test --no-warnings \"test/fast/*.test.mjs\"",
+    "dev": "wrangler dev",
+    "predeploy": "npm run build",
+    "deploy": "wrangler deploy",
+    "verify:cloudflare": "npm run build && wrangler deploy --dry-run",
+    "presmoke:cloudflare": "npm run build",
+    "smoke:cloudflare": "node scripts/cloudflare-smoke.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deeeeeeeeap/nodecrypt.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/deeeeeeeeap/nodecrypt/issues"
+  },
+  "homepage": "https://github.com/deeeeeeeeap/nodecrypt#readme",
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "autoprefixer": "^10.4.21",
+    "cssnano": "^7.0.7",
+    "playwright": "^1.60.0",
+    "terser": "^5.39.2",
+    "vite": "^6.3.5",
+    "wrangler": "^4.16.1"
+  },
+  "dependencies": {
+    "@dicebear/core": "^9.2.2",
+    "@dicebear/micah": "^9.2.2",
+    "aes-js": "^3.1.2",
+    "buffer": "^6.0.3",
+    "dompurify": "^3.2.6",
+    "emoji-picker-element": "^1.26.3",
+    "fflate": "^0.8.2",
+    "js-sha256": "^0.11.0"
+  }
+}
