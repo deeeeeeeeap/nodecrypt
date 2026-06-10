@@ -7,6 +7,7 @@ import { emit } from './bus.js';
 import { fileTransfers } from './util.file.state.js';
 import {
 	arrayBufferToBase64,
+	base64ToArrayBuffer,
 	calculateHash,
 	chooseVolumeSize,
 	combineVolumeData,
@@ -14,6 +15,7 @@ import {
 	compressFilesToArchive,
 	countVolumes,
 	generateFileId,
+	isSafeIntegerInRange,
 	isValidFileId,
 	isValidFileStartMessage,
 	isValidFileVolumeMessage,
@@ -22,8 +24,17 @@ import {
 	validateSelectedFiles,
 	validateVolumeCount,
 	validateVolumeTotal,
-	yieldToBrowser
+	yieldToBrowser,
+	DEFAULT_VOLUME_SIZE,
+	MEMORY_RECEIVE_LIMIT,
+	MIN_VOLUME_SIZE
 } from './util.file.codec.js';
+import {
+	createReceiveSink,
+	isOpfsSinkSupported,
+	verifyFileHash,
+	wipeOrphanedSinkFiles
+} from './util.file.sink.js';
 import {
 	handleFileNack,
 	refreshRepairFailureCheckOnVolume,
@@ -39,6 +50,7 @@ const RESUMABLE_TRANSFER_TTL_MS = 10 * 60 * 1000;
 const FILE_VOLUME_YIELD_INTERVAL = 4;
 const STALE_RECEIVE_TTL_MS = 15 * 60 * 1000;
 const STALE_SWEEP_INTERVAL_MS = 60 * 1000;
+const SINK_DISPOSE_GRACE_MS = 5 * 60 * 1000;
 
 // Incomplete inbound transfers whose sender stopped feeding volumes can never finish once
 // the sender's repair window (RESUMABLE_TRANSFER_TTL_MS) lapses; sweep them so their
@@ -56,6 +68,7 @@ const staleReceiveSweepTimer = setInterval(() => {
 			if (transfer.repairTimer) clearTimeout(transfer.repairTimer);
 			if (transfer.repairFailureTimer) clearTimeout(transfer.repairFailureTimer);
 			if (transfer.cleanupTimer) clearTimeout(transfer.cleanupTimer);
+			disposeTransferSink(transfer);
 			fileTransfers.delete(fileId)
 		}
 	}
@@ -66,12 +79,57 @@ if (staleReceiveSweepTimer && typeof staleReceiveSweepTimer.unref === 'function'
 	staleReceiveSweepTimer.unref()
 }
 
+// Sink files from previous sessions can never be claimed again; clear them on startup.
+// 上一会话遗留的落盘文件不可能再被认领,启动时清理。
+void wipeOrphanedSinkFiles();
+
+function disposeTransferSink(transfer) {
+	if (!transfer || !transfer.sinkPromise) return;
+	const pending = transfer.sinkPromise;
+	transfer.sinkPromise = null;
+	void pending.then((sink) => sink.dispose()).catch(() => {})
+}
+
+function failSinkTransfer(fileId, error) {
+	const transfer = fileTransfers.get(fileId);
+	if (!transfer) return;
+	console.error('File sink write failed:', error);
+	emit('chat:add-system-msg', t('system.file_receive_failed', 'Failed to store the incoming file (out of disk space?). The transfer was cancelled.'));
+	if (transfer.repairTimer) clearTimeout(transfer.repairTimer);
+	if (transfer.repairFailureTimer) clearTimeout(transfer.repairFailureTimer);
+	disposeTransferSink(transfer);
+	fileTransfers.delete(fileId)
+}
+
+function enqueueSinkVolumeWrite(transfer, volumeIndex, volumeBase64) {
+	const fileId = transfer.fileId;
+	let bytes;
+	try {
+		// Decode eagerly so the base64 string is released right away.
+		// 立即解码,尽早释放 base64 字符串。
+		bytes = base64ToArrayBuffer(volumeBase64)
+	} catch (error) {
+		transfer.receivedVolumes.delete(volumeIndex);
+		return
+	}
+	const position = volumeIndex * transfer.chunkSize;
+	void transfer.sinkPromise
+		.then((sink) => sink.writeVolume(position, bytes))
+		.catch((error) => {
+			const latest = fileTransfers.get(fileId);
+			if (latest && latest.sinkPromise) {
+				failSinkTransfer(fileId, error)
+			}
+		})
+}
+
 function scheduleCompletedTransferCleanup(fileId) {
 	const transfer = fileTransfers.get(fileId);
 	if (!transfer || transfer.cleanupTimer) return;
 	transfer.cleanupTimer = setTimeout(() => {
 		const latest = fileTransfers.get(fileId);
 		if (latest && latest.status === 'completed') {
+			disposeTransferSink(latest);
 			fileTransfers.delete(fileId)
 		}
 	}, COMPLETED_TRANSFER_TTL_MS)
@@ -101,8 +159,7 @@ function refreshSourceFileRepairWindow(fileId) {
 	scheduleSourceFileRelease(fileId)
 }
 
-function saveUint8ArrayAsFile(data, fileName) {
-	const blob = new Blob([data]);
+function saveBlobAsFile(blob, fileName) {
 	const url = URL.createObjectURL(blob);
 	const a = document.createElement('a');
 	a.href = url;
@@ -111,6 +168,10 @@ function saveUint8ArrayAsFile(data, fileName) {
 	a.click();
 	document.body.removeChild(a);
 	URL.revokeObjectURL(url);
+}
+
+function saveUint8ArrayAsFile(data, fileName) {
+	saveBlobAsFile(new Blob([data]), fileName);
 }
 
 async function downloadRawVolumesToFile(volumes, fileName, originalHash = null) {
@@ -577,7 +638,24 @@ function handleFileStart(message, isPrivate, renderMessage = true, options = {})
 	if (!isValidFileStartMessage(message)) {
 		return
 	}
-	
+
+	// Direct-mode volumes stream to OPFS disk staging when available; the in-memory
+	// fallback self-protects against files it cannot safely hold as base64 strings.
+	// 直传分卷优先经 OPFS 流式落盘;内存后备路径对无法安全驻留的大文件自我保护。
+	const useSink = transferMode === 'direct' &&
+		isOpfsSinkSupported() &&
+		isSafeIntegerInRange(chunkSize, MIN_VOLUME_SIZE, DEFAULT_VOLUME_SIZE);
+	if (transferMode === 'direct' && !useSink && originalSize > MEMORY_RECEIVE_LIMIT) {
+		if (renderMessage) {
+			emit('chat:add-system-msg', t('system.file_too_large_for_memory', 'An incoming file was skipped: it is too large to receive without disk staging (OPFS), which this browser does not support.'))
+		}
+		return
+	}
+
+	// A duplicate file_start replaces the transfer record; release the old sink file first.
+	// 重复的 file_start 会重建传输记录,先释放旧的落盘文件。
+	disposeTransferSink(fileTransfers.get(fileId));
+
 	const fileTransfer = {
 		fileId,
 		fileName,
@@ -591,7 +669,8 @@ function handleFileStart(message, isPrivate, renderMessage = true, options = {})
 		totalVolumes,
 		receivedVolumes: new Set(),
 		nextExpectedVolume: 0,
-		volumeData: new Array(totalVolumes),
+		volumeData: useSink ? null : new Array(totalVolumes),
+		sinkPromise: null,
 		status: 'receiving',
 		originalHash,
 		archiveHash,
@@ -608,7 +687,17 @@ function handleFileStart(message, isPrivate, renderMessage = true, options = {})
 		lastActivityAt: Date.now(),
 		userName // 记录发送者名字
 	};
-	
+
+	if (useSink) {
+		fileTransfer.sinkPromise = createReceiveSink(fileId);
+		fileTransfer.sinkPromise.catch((error) => {
+			const latest = fileTransfers.get(fileId);
+			if (latest && latest.sinkPromise) {
+				failSinkTransfer(fileId, error)
+			}
+		})
+	}
+
 	fileTransfers.set(fileId, fileTransfer);
 	
 	// 添加文件消息到聊天
@@ -649,7 +738,11 @@ function handleFileVolume(message, options = {}) {
 	if (!isValidFileVolumeMessage(message, transfer)) return;
 	
 	transfer.receivedVolumes.add(volumeIndex);
-	transfer.volumeData[volumeIndex] = volumeData;
+	if (transfer.sinkPromise) {
+		enqueueSinkVolumeWrite(transfer, volumeIndex, volumeData)
+	} else {
+		transfer.volumeData[volumeIndex] = volumeData
+	}
 	transfer.lastActivityAt = Date.now();
 	refreshRepairFailureCheckOnVolume(transfer, message);
 	requestGapRepairIfNeeded(transfer, volumeIndex, options);
@@ -712,6 +805,24 @@ export async function downloadFile(fileId) {
 			// Download archive as multiple files
 			await decompressArchiveToFiles(transfer.volumeData, transfer.fileManifest, transfer.archiveHash);
 			// 删除系统提示
+		} else if (transfer.sinkPromise) {
+			// Sink-backed direct transfer: hand the disk-staged File straight to the
+			// download anchor; the browser streams it without a full in-memory copy.
+			// 落盘直传:把磁盘暂存的 File 直接交给下载锚点,浏览器流式读出,无需整文件驻留内存。
+			const sink = await transfer.sinkPromise;
+			const stagedFile = await sink.finalize();
+			if (transfer.originalHash && !(await verifyFileHash(stagedFile, transfer.originalHash))) {
+				throw new Error('File integrity check failed: hash mismatch')
+			}
+			saveBlobAsFile(stagedFile, transfer.fileName);
+			// Deleting the OPFS entry invalidates the File while the browser may still be
+			// streaming the download from it; release it after a grace period instead.
+			// 立即删除 OPFS 条目会使浏览器仍在流式保存的 File 失效;延迟一段宽限期再释放。
+			const pendingSink = transfer.sinkPromise;
+			transfer.sinkPromise = null;
+			setTimeout(() => {
+				void pendingSink.then((s) => s.dispose()).catch(() => {})
+			}, SINK_DISPOSE_GRACE_MS)
 		} else if (transfer.compression === 'none') {
 			await downloadRawVolumesToFile(transfer.volumeData, transfer.fileName, transfer.originalHash);
 		} else {

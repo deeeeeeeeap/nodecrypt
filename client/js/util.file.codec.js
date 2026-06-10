@@ -11,7 +11,11 @@ const MAX_VOLUME_DATA_LENGTH = Math.ceil(DEFAULT_VOLUME_SIZE / 3) * 4 + 1024;
 const MAX_FILE_NAME_LENGTH = 255;
 const MAX_FILE_COUNT = 200;
 const DIRECT_TRANSFER_THRESHOLD = 8 * 1024 * 1024;
-const MAX_SINGLE_FILE_SIZE = 200 * 1024 * 1024; // 200MB：base64 分卷全量驻留内存，1GB 会撑爆浏览器 / volumes stay in memory, 1GB would exhaust the browser
+// Direct-mode receivers stream volumes to OPFS disk staging, so the cap is no longer
+// bound by memory. Receivers without OPFS guard themselves at MEMORY_RECEIVE_LIMIT.
+// 直传接收端经 OPFS 流式落盘，上限不再受内存约束；无 OPFS 的接收端以 MEMORY_RECEIVE_LIMIT 自我保护。
+const MAX_SINGLE_FILE_SIZE = 1024 * 1024 * 1024; // 1GB
+export const MEMORY_RECEIVE_LIMIT = 200 * 1024 * 1024; // 内存接收路径的安全上限 / safe cap for the in-memory receive path
 const FAST_DEFLATE_LEVEL = 3;
 const PUBLIC_PAYLOAD_SAFETY_FACTOR = 3;
 const FILE_ID_PATTERN = /^file_[a-f0-9-]{16,80}$/i;
@@ -32,7 +36,7 @@ export function arrayBufferToBase64(buffer) {
 
 // Base64 decoding back to binary
 // Base64解码回二进制数据
-function base64ToArrayBuffer(base64) {
+export function base64ToArrayBuffer(base64) {
 	return base64ToBytes(base64);
 }
 
