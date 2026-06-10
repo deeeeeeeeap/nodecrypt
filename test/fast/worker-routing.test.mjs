@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import worker, {
+	ChatRoom,
 	getExpectedRoomHash,
 	getRoomObjectName,
 	isJoinRoomAllowed,
@@ -61,4 +62,12 @@ test('worker allows joins only when route shard and encrypted room match', () =>
 	assert.equal(isJoinRoomAllowed(roomA, roomB), false);
 	assert.equal(isJoinRoomAllowed(null, roomB), false);
 	assert.equal(isJoinRoomAllowed('', roomB), false);
+});
+
+test('ChatRoom exposes the hibernation lifecycle handlers', () => {
+	// WebSocket Hibernation API: the runtime delivers events to these class methods,
+	// so renaming/removing any of them silently breaks every connection.
+	for (const method of ['fetch', 'webSocketMessage', 'webSocketClose', 'webSocketError', 'alarm', 'ensureStateRehydrated']) {
+		assert.equal(typeof ChatRoom.prototype[method], 'function', `missing ${method}`);
+	}
 });

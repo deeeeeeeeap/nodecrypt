@@ -9,9 +9,10 @@ import {
 	addClass,
 	removeClass
 } from './util.dom.js';
-import { formatFileSize, validateSelectedFiles } from './util.file.js';
+import { formatFileSize, validateSelectedFiles } from './util.file.codec.js';
 import { t } from './util.i18n.js';
 import { escapeHTML } from './util.string.js';
+import { emit } from './bus.js';
 
 // File upload modal state
 // 文件上传模态框状态
@@ -43,11 +44,13 @@ function ensureDocumentDragGuards() {
 
 // Listen for language changes to update modal text
 // 监听语言变更以更新模态框文本
-window.addEventListener('languageChange', () => {
-	if (uploadModal) {
-		updateModalTexts();
-	}
-});
+if (typeof window !== 'undefined') {
+	window.addEventListener('languageChange', () => {
+		if (uploadModal) {
+			updateModalTexts();
+		}
+	});
+}
 
 // Update modal texts when language changes
 // 语言切换时更新模态框文本
@@ -399,9 +402,7 @@ async function handleSendFiles() {
 			sendBtn.disabled = true;
 			sendBtn.textContent = t('file.preparing', 'Preparing...');
 		}
-		if (window.addSystemMsg) {
-			window.addSystemMsg(t('system.file_prepare', 'Preparing file transfer...'));
-		}
+		emit('chat:add-system-msg', t('system.file_prepare', 'Preparing file transfer...'));
 
 		// Close modal first
 		hideUploadModal();
@@ -411,9 +412,7 @@ async function handleSendFiles() {
 		
 	} catch (error) {
 		console.error('Error sending files:', error);
-		if (window.addSystemMsg) {
-			window.addSystemMsg(`${t('system.file_send_failed', 'Failed to send files:')} ${error.message}`);
-		}
+		emit('chat:add-system-msg', `${t('system.file_send_failed', 'Failed to send files:')} ${error.message}`);
 		if (uploadModal && sendBtn) {
 			sendBtn.disabled = false;
 			sendBtn.textContent = t('file.send_files', 'Send Files')
@@ -423,10 +422,12 @@ async function handleSendFiles() {
 
 // Handle keyboard events
 // 处理键盘事件
-on(document, 'keydown', (e) => {
-	if (!uploadModal) return;
-	
-	if (e.key === 'Escape') {
-		hideUploadModal();
-	}
-});
+if (typeof document !== 'undefined') {
+	on(document, 'keydown', (e) => {
+		if (!uploadModal) return;
+		
+		if (e.key === 'Escape') {
+			hideUploadModal();
+		}
+	});
+}

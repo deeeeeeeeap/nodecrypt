@@ -6,9 +6,12 @@ import {
 } from './util.avatar.js';
 import {
 	roomsData,
-	activeRoomIndex,
+	activeRoomIndex
+} from './room.state.js';
+import {
 	togglePrivateChat,
-	exitRoom
+	exitRoom,
+	joinRoom
 } from './room.js';
 import {
 	escapeHTML
@@ -23,12 +26,16 @@ import {
 	t
 } from './util.i18n.js';
 import {
-	updateChatInputStyle
+	updateChatInputStyle,
+	addSystemMsg
 } from './chat.js';
+import { on as busOn } from './bus.js';
 
 let mobileResizeHandler = null;
 let mobileDocumentClickHandler = null;
 let moreMenuDocumentClickHandler = null;
+let mainHeaderFrame = null;
+let userListFrame = null;
 const LOGIN_CONNECT_TIMEOUT_MS = 20000;
 
 // Utility functions for security and error handling
@@ -78,13 +85,13 @@ function validateRoomData(roomData) {
 // 复制文本到剪贴板（含降级处理）
 function copyToClipboard(text, successMessage = t('action.copied', 'Copied to clipboard!'), errorPrefix = t('action.copy_failed', 'Copy failed, url:'), onCopied = null) {
 	if (!text) {
-		window.addSystemMsg && window.addSystemMsg(t('action.nothing_to_copy', 'Nothing to copy'));
+		addSystemMsg(t('action.nothing_to_copy', 'Nothing to copy'));
 		return;
 	}
 
 	if (navigator.clipboard && navigator.clipboard.writeText) {
 		navigator.clipboard.writeText(text).then(() => {
-			window.addSystemMsg && window.addSystemMsg(successMessage);
+			addSystemMsg(successMessage);
 			if (typeof onCopied === 'function') onCopied();
 		}).catch((error) => {
 			console.error('Clipboard write failed:', error);
@@ -103,7 +110,7 @@ function showFallbackCopy(text, prefix, onCopied = null) {
 		if (typeof onCopied === 'function') onCopied();
 	} else {
 		// For environments where prompt is not available
-		window.addSystemMsg && window.addSystemMsg(t('action.copy_not_supported', 'Copy not supported in this environment'));
+		addSystemMsg(t('action.copy_not_supported', 'Copy not supported in this environment'));
 	}
 }
 
@@ -123,7 +130,7 @@ function executeMenuAction(action, closeMenuCallback) {
 		}
 	} catch (error) {
 		console.error('Menu action failed:', error);
-		window.addSystemMsg && window.addSystemMsg(t('action.action_failed', 'Action failed. Please try again.'));
+		addSystemMsg(t('action.action_failed', 'Action failed. Please try again.'));
 	} finally {
 		closeMenuCallback && closeMenuCallback();
 	}
@@ -134,7 +141,7 @@ function executeMenuAction(action, closeMenuCallback) {
 function handleShareAction() {
 	const validation = validateRoomData(roomsData[activeRoomIndex]);
 	if (!validation.valid) {
-		window.addSystemMsg && window.addSystemMsg(`${t('action.cannot_share', 'Cannot share:')} ${validation.error}`);
+		addSystemMsg(`${t('action.cannot_share', 'Cannot share:')} ${validation.error}`);
 		return;
 	}
 
@@ -155,7 +162,7 @@ function handleShareAction() {
 	const url = `${location.origin}${location.pathname}#${params.toString()}`;
 	
 	copyToClipboard(url, t('action.share_copied', 'Share link copied!'), t('action.copy_url_failed', 'Copy failed, url:'), () => {
-		window.addSystemMsg && window.addSystemMsg(t('ui.share_link_warning', 'The share link contains the node name and password (obfuscated only, effectively plaintext). Share it only through trusted channels.'));
+		addSystemMsg(t('ui.share_link_warning', 'The share link contains the node name and password (obfuscated only, effectively plaintext). Share it only through trusted channels.'));
 	});
 }
 
@@ -174,9 +181,19 @@ function handleExitAction() {
 	}
 }
 
-// Render the main header
-// 渲染主标题栏
+// Render the main header. Repeated calls within one frame collapse into a
+// single rebuild on the next frame (same pattern as util.file.view.js).
+// 渲染主标题栏。同一帧内的重复调用合并为下一帧的一次重建
+// （与 util.file.view.js 的合帧模式一致）。
 export function renderMainHeader() {
+	if (mainHeaderFrame !== null) return;
+	mainHeaderFrame = requestAnimationFrame(() => {
+		mainHeaderFrame = null;
+		renderMainHeaderNow()
+	})
+}
+
+function renderMainHeaderNow() {
 	const rd = roomsData[activeRoomIndex];
 	let roomName = rd ? rd.roomName : 'Room';
 	let onlineCount = rd && rd.userList ? rd.userList.length : 0;
@@ -308,9 +325,20 @@ export function setupMobileUIHandlers() {
 	document.addEventListener('click', mobileDocumentClickHandler)
 }
 
-// Render the user/member list
-// 渲染用户/成员列表
+// Render the user/member list. Coalesced per frame like renderMainHeader.
+// 渲染用户/成员列表。与 renderMainHeader 一样按帧合并。
 export function renderUserList(updateHeader = false) {
+	if (updateHeader) {
+		renderMainHeader()
+	}
+	if (userListFrame !== null) return;
+	userListFrame = requestAnimationFrame(() => {
+		userListFrame = null;
+		renderUserListNow()
+	})
+}
+
+function renderUserListNow() {
 	const userListEl = $id('member-list');
 	if (!userListEl) return;
 	userListEl.innerHTML = '';
@@ -322,14 +350,11 @@ export function renderUserList(updateHeader = false) {
 	if (others.length > 0) {
 		const tip = document.createElement('div');
 		tip.className = 'member-tip member-tip-center';
-		tip.textContent = t('ui.start_private_chat', '选择用户开始私信');
+		tip.textContent = t('ui.start_private_chat', '选择用户开始私聊');
 		userListEl.appendChild(tip);
 	}
 	if (me) userListEl.appendChild(createUserItem(me, true));
-	others.forEach(u => userListEl.appendChild(createUserItem(u, false)));
-	if (updateHeader) {
-		renderMainHeader()
-	}
+	others.forEach(u => userListEl.appendChild(createUserItem(u, false)))
 }
 
 // Create a user list item
@@ -528,7 +553,7 @@ export function loginFormHandler(modal) {
 			resetButton();
 			showConnectError();
 		}, LOGIN_CONNECT_TIMEOUT_MS);
-		attempt = window.joinRoom(userName, roomName, password, modal, function(success) {
+		attempt = joinRoom(userName, roomName, password, modal, function(success) {
 			if (settled) return;
 			settled = true;
 			clearTimeout(timeout);
@@ -624,9 +649,7 @@ export function autofillRoomPwd(formPrefix = '') {
 		isPlaintext = true;
 		
 		// Show security warning for plaintext URLs
-		if (window.addSystemMsg) {
-			window.addSystemMsg(t('system.security_warning', '⚠️ This link uses an old format. Room data is not encrypted.'), true);
-		}
+		addSystemMsg(t('system.security_warning', '⚠️ This link uses an old format. Room data is not encrypted.'), true);
 	}
 		// Fill in the form fields
 	if (roomValue) {
@@ -732,3 +755,9 @@ export function initFlipCard() {
 		toggleFlip();
 	});
 }
+
+// Render notifications from room logic arrive over the bus so room.js
+// no longer needs a reverse import into this UI module.
+// 房间逻辑的渲染通知经事件总线到达，room.js 不再反向 import 本 UI 模块。
+busOn('ui:render-main-header', () => renderMainHeader());
+busOn('ui:render-user-list', (updateHeader) => renderUserList(updateHeader));

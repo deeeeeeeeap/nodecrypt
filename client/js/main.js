@@ -1,13 +1,8 @@
-// 导入 NodeCrypt 模块（加密功能模块）
-// Import the NodeCrypt module (used for encryption)
-import './NodeCrypt.js';
-
 // 从 util.file.js 中导入设置文件发送的函数
 // Import setupFileSend function from util.file.js
 import {
 	setupFileSend,
-	handleFileMessage,
-	downloadFile
+	handleFileMessage
 } from './util.file.js';
 
 // 从 util.image.js 中导入图片处理功能
@@ -27,8 +22,7 @@ import {
 import {
 	openSettingsPanel,   // 打开设置面板 / Open settings panel
 	closeSettingsPanel,  // 关闭设置面板 / Close settings panel
-	initSettings,         // 初始化设置 / Initialize settings
-	notifyMessage         // 通知信息提示 / Display notification message
+	initSettings          // 初始化设置 / Initialize settings
 } from './util.settings.js';
 import { t, updateStaticTexts } from './util.i18n.js';
 
@@ -46,19 +40,18 @@ import {
 	removeClass // 移除类名 / Remove a CSS class
 } from './util.dom.js';
 
-// 从 room.js 中导入房间管理相关变量和函数
-// Import room-related variables and functions from room.js
+// 从 room.state.js / room.js 中导入房间状态与管理函数
+// Import room state and management functions
 import {
 	roomsData,         // 当前所有房间的数据 / Data of all rooms
-	activeRoomIndex,   // 当前激活的房间索引 / Index of the active room
-	joinRoom           // 加入房间的函数 / Function to join a room
-} from './room.js';
+	activeRoomIndex    // 当前激活的房间索引 / Index of the active room
+} from './room.state.js';
+import './room.js';
 
 // 从 chat.js 中导入聊天功能相关的函数
 // Import chat-related functions from chat.js
 import {
 	addMsg,               // 添加普通消息到聊天窗口 / Add a normal message to chat
-	addOtherMsg,          // 添加其他用户消息 / Add message from other users
 	addSystemMsg,         // 添加系统消息 / Add a system message
 	setupImagePreview,    // 设置图片预览功能 / Setup image preview
 	setupInputPlaceholder, // 设置输入框的占位提示 / Setup placeholder for input box
@@ -86,28 +79,15 @@ import {	renderUserList,       // 渲染用户列表 / Render user list
 	initFlipCard          // 初始化翻转卡片功能 / Initialize flip card functionality
 } from './ui.js';
 
-// 设置全局配置参数
-// Set global configuration parameters
-window.config = {
-	wsAddress: `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`, // WebSocket 服务器地址 / WebSocket server address
-	// wsAddress: `wss://your-worker.example.com`,
-	debug: false                      // 是否开启调试模式 / Enable debug mode
-};
-
 // 在文档开始加载前就初始化语言设置，防止闪烁
 // Initialize language settings before document starts loading
 initSettings();
 updateStaticTexts();
 
-// 把一些函数挂载到 window 对象上供其他模块使用
-// Expose functions to the global window object for accessibility
-window.addSystemMsg = addSystemMsg;
-window.addOtherMsg = addOtherMsg;
-window.joinRoom = joinRoom;
-window.notifyMessage = notifyMessage;
-window.setupEmojiPicker = setupEmojiPicker;
+// Kept as a window hook on purpose: room.js dispatches through it and the
+// e2e smoke harness patches it to simulate packet loss (scripts/cloudflare-smoke.mjs).
+// 故意保留的 window 钩子：room.js 经由它分发，端到端 smoke 脚本会替换它来模拟丢包。
 window.handleFileMessage = handleFileMessage;
-window.downloadFile = downloadFile;
 
 function addFileSendEcho(roomIndex, message, msgType) {
 	if (roomIndex === activeRoomIndex) {

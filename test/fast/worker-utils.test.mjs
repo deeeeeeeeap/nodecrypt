@@ -2,12 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+	appendToHistoryBacklog,
 	createRateLimiter,
 	decryptMessage,
 	encryptMessage,
 	isArray,
 	isObject,
-	isString
+	isString,
+	packClientAttachment,
+	unpackClientAttachment
 } from '../../worker/utils.js';
 
 const key = Buffer.alloc(32, 7);
@@ -87,4 +90,70 @@ test('createRateLimiter enforces byte budget and rolls the window', () => {
 	assert.equal(limiter.allow(80, start), true);
 	assert.equal(limiter.allow(80, start + 1), false);
 	assert.equal(limiter.allow(80, start + 10001), true);
+});
+
+test('appendToHistoryBacklog rejects oversized or non-string entries untouched', () => {
+	const limits = { maxMessages: 10, maxBytes: 1000, maxEntryBytes: 10 };
+	const backlog = ['keep'];
+	assert.equal(appendToHistoryBacklog(backlog, 'x'.repeat(11), limits), false);
+	assert.equal(appendToHistoryBacklog(backlog, 42, limits), false);
+	assert.equal(appendToHistoryBacklog(backlog, null, limits), false);
+	assert.deepEqual(backlog, ['keep']);
+});
+
+test('appendToHistoryBacklog evicts oldest entries past the message cap', () => {
+	const limits = { maxMessages: 3, maxBytes: 1000, maxEntryBytes: 100 };
+	const backlog = [];
+	for (const entry of ['m1', 'm2', 'm3', 'm4']) {
+		assert.equal(appendToHistoryBacklog(backlog, entry, limits), true);
+	}
+	assert.deepEqual(backlog, ['m2', 'm3', 'm4']);
+});
+
+test('appendToHistoryBacklog evicts oldest entries past the byte cap', () => {
+	const limits = { maxMessages: 100, maxBytes: 10, maxEntryBytes: 10 };
+	const backlog = [];
+	appendToHistoryBacklog(backlog, 'aaaa', limits);
+	appendToHistoryBacklog(backlog, 'bbbb', limits);
+	appendToHistoryBacklog(backlog, 'cccc', limits);
+	assert.deepEqual(backlog, ['bbbb', 'cccc']);
+});
+
+test('client attachment round-trips through pack/unpack with a 32-byte shared key', () => {
+	const shared = Buffer.alloc(32, 5);
+	const channel = 'f'.repeat(64);
+	const packed = packClientAttachment({
+		clientId: 'abc123abc123abc1',
+		shared,
+		channel,
+		expectedRoomHash: channel,
+		seen: 12345
+	});
+	// shared must travel as base64 (attachments are structured-clone snapshots)
+	assert.equal(packed.shared, shared.toString('base64'));
+
+	const unpacked = unpackClientAttachment(packed);
+	assert.equal(unpacked.clientId, 'abc123abc123abc1');
+	assert.equal(Buffer.compare(unpacked.shared, shared), 0);
+	assert.equal(unpacked.channel, channel);
+	assert.equal(unpacked.expectedRoomHash, channel);
+	assert.equal(unpacked.seen, 12345);
+});
+
+test('client attachment unpack handles pre-handshake state and rejects malformed input', () => {
+	const packed = packClientAttachment({ clientId: 'abc123abc123abc1', shared: null, channel: null, expectedRoomHash: null, seen: 0 });
+	assert.deepEqual(unpackClientAttachment(packed), {
+		clientId: 'abc123abc123abc1',
+		shared: null,
+		channel: null,
+		expectedRoomHash: null,
+		seen: 0
+	});
+
+	assert.equal(unpackClientAttachment(null), null);
+	assert.equal(unpackClientAttachment('nope'), null);
+	assert.equal(unpackClientAttachment({}), null);
+	// shared present but not a valid 32-byte key -> unrecoverable
+	assert.equal(unpackClientAttachment({ clientId: 'abc123abc123abc1', shared: 'AAAA' }), null);
+	assert.equal(unpackClientAttachment({ clientId: 'abc123abc123abc1', shared: 1234 }), null);
 });

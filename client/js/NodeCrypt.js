@@ -13,11 +13,18 @@ import {
 import {
 	deriveServerLinkKey,
 	encryptServerEnvelope,
-	decryptServerEnvelope
+	decryptServerEnvelope,
+	bytesToBase64,
+	base64ToBytes
 } from './util.serverCrypto.js';
 if (typeof window !== 'undefined') {
 	window.Buffer = Buffer
 }
+
+// Module-level singletons keep the per-message hot path free of codec allocations.
+// 模块级单例，避免热路径上每条消息重复创建编解码器。
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
 
 function getSafeLogMessage(source, message) {
 	if (message instanceof Error) {
@@ -120,6 +127,7 @@ class NodeCrypt {
 		this.encryptServerMessage = this.encryptServerMessage.bind(this);
 		this.decryptServerMessage = this.decryptServerMessage.bind(this);
 		this.encryptClientMessage = this.encryptClientMessage.bind(this);
+		this.encryptClientPlaintext = this.encryptClientPlaintext.bind(this);
 		this.decryptClientMessage = this.decryptClientMessage.bind(this)
 	}
 
@@ -710,13 +718,21 @@ class NodeCrypt {
 		if (this.serverShared && this.isOpen()) {
 			try {
 				let payloads = {};
+				// Stringify/encode the shared plaintext once; AES-GCM encryption still runs
+				// per recipient with each pairwise key (and a fresh random nonce).
+				// 共享明文只做一次 JSON 序列化与 UTF-8 编码；AES-GCM 加密仍按每个收件人的
+				// 独立配对密钥（与全新随机 nonce）进行。
+				let plaintext = null;
 				for (const clientId in this.channel) {
 					if (this.channel[clientId].shared && this.channel[clientId].username) {
-						payloads[clientId] = await this.encryptClientMessage({
-							a: 'm',
-							t: type,
-							d: data
-						}, this.channel[clientId].shared);
+						if (plaintext === null) {
+							plaintext = textEncoder.encode(JSON.stringify({
+								a: 'm',
+								t: type,
+								d: data
+							}))
+						}
+						payloads[clientId] = await this.encryptClientPlaintext(plaintext, this.channel[clientId].shared);
 						if (payloads[clientId].length === 0) {
 							return (false)
 						}
@@ -956,18 +972,32 @@ class NodeCrypt {
 	// Encrypt a message for a client
 	// 加密发送给客户端的消息
 	async encryptClientMessage(message, key) {
+		let plaintext = null;
+		try {
+			plaintext = textEncoder.encode(JSON.stringify(message))
+		} catch (error) {
+			this.logEvent('encryptClientMessage', error, 'error');
+			return ('')
+		}
+		return this.encryptClientPlaintext(plaintext, key)
+	}
+
+	// Encrypt pre-encoded plaintext bytes for a client (g1 envelope, byte-identical output);
+	// group sends reuse one encoded plaintext across recipients.
+	// 加密预编码的明文字节（g1 信封，输出字节级一致）；群发对所有收件人复用同一份编码明文。
+	async encryptClientPlaintext(plaintext, key) {
 		let encrypted = '';
 		try {
-			const nonce = Buffer.from(crypto.getRandomValues(new Uint8Array(12)));
+			const nonce = crypto.getRandomValues(new Uint8Array(12));
 			const ciphertext = await crypto.subtle.encrypt(
 				{
 					name: 'AES-GCM',
 					iv: nonce
 				},
 				key,
-				Buffer.from(JSON.stringify(message), 'utf8')
+				plaintext
 			);
-			encrypted = `g1|${nonce.toString('base64')}|${Buffer.from(ciphertext).toString('base64')}`
+			encrypted = `g1|${bytesToBase64(nonce)}|${bytesToBase64(new Uint8Array(ciphertext))}`
 		} catch (error) {
 			this.logEvent('encryptClientMessage', error, 'error')
 		}
@@ -986,12 +1016,12 @@ class NodeCrypt {
 			const plaintext = await crypto.subtle.decrypt(
 				{
 					name: 'AES-GCM',
-					iv: Buffer.from(parts[1], 'base64')
+					iv: base64ToBytes(parts[1])
 				},
 				key,
-				Buffer.from(parts[2], 'base64')
+				base64ToBytes(parts[2])
 			);
-			decrypted = JSON.parse(Buffer.from(plaintext).toString('utf8'))
+			decrypted = JSON.parse(textDecoder.decode(plaintext))
 		} catch (error) {
 			this.logEvent('decryptClientMessage', error, 'error')
 		}

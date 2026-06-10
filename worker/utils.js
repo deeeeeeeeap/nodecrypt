@@ -143,6 +143,73 @@ export const isObject = (value) => {
   );
 };
 
+// History backlog cap policy (max entry size / max count / max total bytes), extracted as a
+// pure helper so it stays unit-testable without a Durable Object runtime.
+// Mutates `backlog` in place; returns false when the entry is rejected outright.
+export const appendToHistoryBacklog = (backlog, entry, { maxMessages, maxBytes, maxEntryBytes }) => {
+
+  if (!isString(entry) || entry.length > maxEntryBytes) {
+    return (false);
+  }
+
+  backlog.push(entry);
+
+  while (backlog.length > maxMessages) {
+    backlog.shift();
+  }
+
+  let totalBytes = backlog.reduce((sum, item) => sum + item.length, 0);
+  while (totalBytes > maxBytes && backlog.length > 0) {
+    const removed = backlog.shift();
+    totalBytes -= removed ? removed.length : 0;
+  }
+
+  return (true);
+
+};
+
+// WebSocket attachments survive Durable Object hibernation as structured-clone snapshots.
+// pack/unpack pin the schema: the 32-byte AES link key (Buffer) travels as base64, the rest
+// as plain scalars.
+export const packClientAttachment = (client) => {
+  return ({
+    clientId: client.clientId,
+    shared: client.shared ? client.shared.toString('base64') : null,
+    channel: client.channel || null,
+    expectedRoomHash: client.expectedRoomHash || null,
+    seen: client.seen || 0
+  });
+};
+
+// Returns null when the attachment is malformed; callers should treat the socket as
+// unrecoverable and close it (the client will reconnect with a fresh handshake).
+export const unpackClientAttachment = (attachment) => {
+
+  if (!isObject(attachment) || !isString(attachment.clientId)) {
+    return (null);
+  }
+
+  let shared = null;
+  if (attachment.shared !== null && attachment.shared !== undefined) {
+    if (!isString(attachment.shared)) {
+      return (null);
+    }
+    shared = Buffer.from(attachment.shared, 'base64');
+    if (shared.length !== 32) {
+      return (null);
+    }
+  }
+
+  return ({
+    clientId: attachment.clientId,
+    shared: shared,
+    channel: isString(attachment.channel) ? attachment.channel : null,
+    expectedRoomHash: isString(attachment.expectedRoomHash) ? attachment.expectedRoomHash : null,
+    seen: typeof attachment.seen === 'number' && Number.isFinite(attachment.seen) ? attachment.seen : 0
+  });
+
+};
+
 // Note: Since Cloudflare Workers don't have access to global.gc,
 // we're not including the garbage collection interval that's in server.js
 // setInterval(() => {

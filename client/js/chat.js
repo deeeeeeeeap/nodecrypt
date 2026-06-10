@@ -6,7 +6,7 @@ import {
 import {
 	roomsData,
 	activeRoomIndex
-} from './room.js';
+} from './room.state.js';
 import {
 	escapeHTML,
 	textToHTML
@@ -21,9 +21,11 @@ import {
 	removeClass
 } from './util.dom.js';
 import {
+	downloadFile,
 	formatFileSize,
 	getFileTransferPresentation
 } from './util.file.js';
+import { on as busOn } from './bus.js';
 import {
 	t
 } from './util.i18n.js';
@@ -48,7 +50,10 @@ function scheduleScrollToBottom(chatArea) {
 }
 
 function appendChatNode(chatArea, node) {
-	const shouldStickToBottom = chatRenderFragment ||
+	// A pending scroll-to-bottom already pins the final view to the bottom,
+	// so the layout read is only needed when no scroll is scheduled.
+	// 待执行的滚动到底部已决定最终视图停在底部，仅在无排程滚动时才需读取布局。
+	const shouldStickToBottom = chatRenderFragment || chatScrollFrame !== null ||
 		isNearBottomScroll(chatArea.scrollHeight, chatArea.scrollTop, chatArea.clientHeight);
 	(chatRenderFragment || chatArea).appendChild(node);
 	if (!chatRenderFragment && shouldStickToBottom) {
@@ -65,11 +70,19 @@ if (typeof document !== 'undefined') {
 		if (!target) return;
 
 		const fileId = target.getAttribute('data-file-id');
-		if (fileId && typeof window.downloadFile === 'function') {
-			window.downloadFile(fileId)
+		if (fileId) {
+			downloadFile(fileId)
 		}
 	})
 }
+
+// Render notifications from room logic and file transfer modules arrive over the bus,
+// keeping those modules free of reverse imports into this rendering module.
+// 房间逻辑与文件传输模块的渲染通知经事件总线到达，避免它们反向 import 本渲染模块。
+busOn('chat:add-system-msg', (text, isHistory, timestamp) => addSystemMsg(text, isHistory, timestamp));
+busOn('chat:add-other-msg', (msg, userName, avatar, isHistory, msgType, timestamp) => addOtherMsg(msg, userName, avatar, isHistory, msgType, timestamp));
+busOn('chat:render-area', () => renderChatArea());
+busOn('chat:update-input-style', () => updateChatInputStyle());
 
 // Render the chat area
 // 渲染聊天区域

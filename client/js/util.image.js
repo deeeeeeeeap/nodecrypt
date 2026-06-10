@@ -12,6 +12,9 @@ export async function processImage(file, callback) {
 	// Create image element for loading file
 	// 创建图片元素用于加载文件
 	const img = new Image();
+	// Decode the file through a short-lived object URL (no base64 round-trip)
+	// 通过临时对象 URL 解码文件（无需 base64 编解码往返）
+	const objectUrl = URL.createObjectURL(file);
 	img.onload = function() {
 		const maxW = 1280, // Max width
 			maxH = 1280;    // 最大宽度/高度
@@ -35,15 +38,13 @@ export async function processImage(file, callback) {
 		// Export as webp with 90% quality
 		// 导出为 webp，90% 质量
 		dataUrl = canvas.toDataURL('image/webp', 0.90);
+		URL.revokeObjectURL(objectUrl);
 		callback(dataUrl)
 	};
-	// Read file as data URL
-	// 以 dataURL 方式读取文件
-	const reader = new FileReader();
-	reader.onload = function(e) {
-		img.src = e.target.result
+	img.onerror = function() {
+		URL.revokeObjectURL(objectUrl)
 	};
-	reader.readAsDataURL(file)
+	img.src = objectUrl
 }
 
 // Translate message key

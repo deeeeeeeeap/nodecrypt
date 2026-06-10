@@ -5,15 +5,6 @@ import {
 	createAvatarSVG
 } from './util.avatar.js';
 import {
-	renderChatArea,
-	addSystemMsg,
-	updateChatInputStyle
-} from './chat.js';
-import {
-	renderMainHeader,
-	renderUserList
-} from './ui.js';
-import {
 	escapeHTML
 } from './util.string.js';
 import {
@@ -27,8 +18,15 @@ import {
 	appendMessage
 } from './chat.logic.js';
 import { t } from './util.i18n.js';
-let roomsData = [];
-let activeRoomIndex = -1;
+import { notifyMessage } from './util.settings.js';
+import NodeCrypt from './NodeCrypt.js';
+import { config } from './config.js';
+import {
+	roomsData,
+	activeRoomIndex,
+	setActiveRoomIndex
+} from './room.state.js';
+import { emit } from './bus.js';
 
 function removePendingRoom(roomData) {
 	const index = roomsData.indexOf(roomData);
@@ -44,11 +42,11 @@ function removePendingRoom(roomData) {
 		if (roomsData.length > 0) {
 			switchRoom(Math.min(index, roomsData.length - 1))
 		} else {
-			activeRoomIndex = -1;
+			setActiveRoomIndex(-1);
 			renderRooms(-1)
 		}
 	} else if (activeRoomIndex > index) {
-		activeRoomIndex -= 1
+		setActiveRoomIndex(activeRoomIndex - 1)
 	}
 }
 
@@ -89,7 +87,7 @@ function setRoomConnectionStatus(idx, status, details = {}) {
 			timestamp
 		});
 		if (activeRoomIndex === idx) {
-			addSystemMsg(text, true, timestamp)
+			emit('chat:add-system-msg', text, true, timestamp)
 		}
 	};
 	rd.connectionStatus = status;
@@ -117,7 +115,7 @@ function setRoomConnectionStatus(idx, status, details = {}) {
 		}
 	}
 	if (activeRoomIndex === idx) {
-		renderMainHeader()
+		emit('ui:render-main-header')
 	}
 }
 
@@ -125,17 +123,17 @@ function setRoomConnectionStatus(idx, status, details = {}) {
 // 切换到指定索引的房间
 export function switchRoom(index) {
 	if (index < 0 || index >= roomsData.length) return;
-	activeRoomIndex = index;
+	setActiveRoomIndex(index);
 	const rd = roomsData[index];
 	if (typeof rd.unreadCount === 'number') rd.unreadCount = 0;
 	const sidebarUsername = document.getElementById('sidebar-username');
 	if (sidebarUsername) sidebarUsername.textContent = rd.myUserName;
 	setSidebarAvatar(rd.myUserName);
 	renderRooms(index);
-	renderMainHeader();
-	renderUserList(false);
-	renderChatArea();
-	updateChatInputStyle()
+	emit('ui:render-main-header');
+	emit('ui:render-user-list', false);
+	emit('chat:render-area');
+	emit('chat:update-input-style')
 }
 
 // Set the sidebar avatar
@@ -197,7 +195,7 @@ export function joinRoom(userName, roomName, password, modal = null, onResult) {
 				'The server identity key changed. This can happen after a server redeploy, but it can also indicate interception. Trust the new key?'
 			));
 
-			addSystemMsg(trusted ?
+			emit('chat:add-system-msg', trusted ?
 				t('system.server_key_accepted', 'New server identity key trusted') :
 				t('system.server_key_rejected', 'Server identity key rejected')
 			);
@@ -205,7 +203,7 @@ export function joinRoom(userName, roomName, password, modal = null, onResult) {
 			return trusted
 		},
 		onServerTrustError: () => {
-			addSystemMsg(t('system.server_trust_error', 'Server identity verification failed'))
+			emit('chat:add-system-msg', t('system.server_trust_error', 'Server identity verification failed'))
 		},
 		onServerSecured: () => {
 			if (modal) modal.remove();
@@ -230,7 +228,7 @@ export function joinRoom(userName, roomName, password, modal = null, onResult) {
 		onClientMessage: (msg) => handleClientMessage(idx, msg),
 		onHistoryMessages: (messages) => handleHistoryMessages(idx, messages)
 	};
-	const chatInst = new window.NodeCrypt(window.config, callbacks);
+	const chatInst = new NodeCrypt(config, callbacks);
 	roomsData[idx].chat = chatInst;
 	const hasCredentials = chatInst.setCredentials(userName, roomName, password);
 	const connected = hasCredentials && chatInst.connect();
@@ -266,8 +264,8 @@ export function handleClientList(idx, list, selfId, rawClientIds = null) {
 	});
 	rd.myId = selfId;
 	if (activeRoomIndex === idx) {
-		renderUserList(false);
-		renderMainHeader()
+		emit('ui:render-user-list', false);
+		emit('ui:render-main-header')
 	}
 	rd.initCount = (rd.initCount || 0) + 1;
 	if (rd.initCount === 2) {
@@ -335,8 +333,8 @@ export function handleHistoryMessages(idx, messages) {
 	}
 
 	if (added > 0 && activeRoomIndex === idx) {
-		renderChatArea();
-		addSystemMsg(formatHistoryLoadedMessage(added))
+		emit('chat:render-area');
+		emit('chat:add-system-msg', formatHistoryLoadedMessage(added))
 	}
 }
 
@@ -353,8 +351,8 @@ export function handleClientSecured(idx, user) {
 		rd.userList[existingUserIndex] = user
 	}
 	if (activeRoomIndex === idx) {
-		renderUserList(false);
-		renderMainHeader()
+		emit('ui:render-user-list', false);
+		emit('ui:render-main-header')
 	}
 	resumeRoomFileRepairs(idx, user);
 	if (!rd.isInitialized) {
@@ -368,10 +366,8 @@ export function handleClientSecured(idx, user) {
 			type: 'system',
 			text: msg
 		});
-		if (activeRoomIndex === idx) addSystemMsg(msg, true);
-		if (window.notifyMessage) {
-			window.notifyMessage(rd.roomName, 'system', msg)
-		}
+		if (activeRoomIndex === idx) emit('chat:add-system-msg', msg, true);
+		notifyMessage(rd.roomName, 'system', msg)
 	}
 }
 
@@ -386,7 +382,7 @@ export function handleClientLeft(idx, clientId) {
 		rd.privateChatTargetId = null;
 		rd.privateChatTargetName = null;
 		if (activeRoomIndex === idx) {
-			updateChatInputStyle()
+			emit('chat:update-input-style')
 		}
 	}
 	if (!user && !wasPrivateTarget) {
@@ -396,8 +392,8 @@ export function handleClientLeft(idx, clientId) {
 			rd.rawUserIds.delete(clientId)
 		}
 		if (activeRoomIndex === idx) {
-			renderUserList(false);
-			renderMainHeader()
+			emit('ui:render-user-list', false);
+			emit('ui:render-main-header')
 		}
 		return
 	}
@@ -407,15 +403,15 @@ export function handleClientLeft(idx, clientId) {
 		type: 'system',
 		text: msg
 	});
-	if (activeRoomIndex === idx) addSystemMsg(msg, true);
+	if (activeRoomIndex === idx) emit('chat:add-system-msg', msg, true);
 	rd.userList = rd.userList.filter(u => u.clientId !== clientId);
 	delete rd.userMap[clientId];
 	if (rd.rawUserIds instanceof Set) {
 		rd.rawUserIds.delete(clientId)
 	}
 	if (activeRoomIndex === idx) {
-		renderUserList(false);
-		renderMainHeader()
+		emit('ui:render-user-list', false);
+		emit('ui:render-main-header')
 	}
 }
 
@@ -465,12 +461,16 @@ export function handleClientMessage(idx, msg) {
 			}
 
 			const notificationMsgType = msgType.includes('_private') ? 'private file' : 'file';
-			if (window.notifyMessage && msg.data && msg.data.fileName) {
-				window.notifyMessage(newRd.roomName, notificationMsgType, `${msg.data.fileName}`, realUserName);
+			if (msg.data && msg.data.fileName) {
+				notifyMessage(newRd.roomName, notificationMsgType, `${msg.data.fileName}`, realUserName);
 			}
 		}
 
 		const isActiveRoom = activeRoomIndex === idx;
+		// Dispatch through window.handleFileMessage (kept as a test hook: the e2e smoke
+		// harness patches it to simulate packet loss). main.js mounts the real handler.
+		// 通过 window.handleFileMessage 分发（保留为测试钩子：端到端 smoke 脚本会
+		// 替换它来模拟丢包）。真实处理函数由 main.js 挂载。
 		if (window.handleFileMessage) {
 			window.handleFileMessage(msg.data, msgType.includes('_private'), {
 				renderMessage: isActiveRoom,
@@ -527,18 +527,14 @@ export function handleClientMessage(idx, msg) {
 
 	// Only add message to chat display if it's for the active room
 	if (activeRoomIndex === idx) {
-		if (window.addOtherMsg) {
-			window.addOtherMsg(msg.data, realUserName, realUserName, false, msgType);
-		}
+		emit('chat:add-other-msg', msg.data, realUserName, realUserName, false, msgType);
 	} else {
 		roomsData[idx].unreadCount = (roomsData[idx].unreadCount || 0) + 1;
 		renderRooms(activeRoomIndex);
 	}
 
 	const notificationMsgType = msgType.includes('_private') ? `private ${msgType.split('_')[0]}` : msgType;
-	if (window.notifyMessage) {
-		window.notifyMessage(newRd.roomName, notificationMsgType, msg.data, realUserName);
-	}
+	notifyMessage(newRd.roomName, notificationMsgType, msg.data, realUserName);
 }
 
 // Toggle private chat with a user
@@ -553,8 +549,8 @@ export function togglePrivateChat(targetId, targetName) {
 		rd.privateChatTargetId = targetId;
 		rd.privateChatTargetName = targetName
 	}
-	renderUserList();
-	updateChatInputStyle()
+	emit('ui:render-user-list');
+	emit('chat:update-input-style')
 }
 
 
@@ -580,8 +576,6 @@ export function exitRoom() {
 	return false
 }
 
-export { roomsData, activeRoomIndex };
-
 // Listen for sidebar username update event
 // 监听侧边栏用户名更新事件
 window.addEventListener('updateSidebarUsername', () => {
@@ -603,6 +597,6 @@ window.addEventListener('nodecrypt:clear-private-chat', () => {
 	if (!rd || !rd.privateChatTargetId) return;
 	rd.privateChatTargetId = null;
 	rd.privateChatTargetName = null;
-	renderUserList();
-	updateChatInputStyle()
+	emit('ui:render-user-list');
+	emit('chat:update-input-style')
 });
